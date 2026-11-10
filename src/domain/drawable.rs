@@ -7,7 +7,9 @@
 //! vector, an `<animated-selector>` as a selector, an `<animation-list>`'s
 //! first frame, a `<rotate>` at its `fromDegrees`, and nothing for
 //! `<clip>` and `<scale>`. Drawables they reference are loaded and drawn
-//! in place, vectors through `vector_drawable`. Everything as SVG in dp.
+//! in place, vectors through `vector_drawable`; bitmaps (`<bitmap>`,
+//! `<nine-patch>`, a referenced PNG / JPEG / WebP / GIF) as embedded
+//! images, sized by their density. Everything as SVG in dp.
 
 use std::fmt::Write as _;
 
@@ -27,6 +29,104 @@ pub struct Lookup<'a> {
     pub color: &'a dyn Fn(&str) -> Option<u32>,
     pub value: &'a dyn Fn(&str) -> Option<String>,
     pub drawable: &'a dyn Fn(&str) -> Option<String>,
+    /// A referenced image file (`@drawable/photo` → `photo.png`).
+    pub bitmap: &'a dyn Fn(&str) -> Option<Bitmap>,
+}
+
+/// An image file a drawable refers to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bitmap {
+    pub bytes: Vec<u8>,
+    /// Its pixels per dp, from its folder (`drawable-xhdpi` 2).
+    pub density: f32,
+    /// A `.9.png`: its 1px border marks the stretchable areas.
+    pub nine_patch: bool,
+}
+
+impl Bitmap {
+    /// Pixels per dp of images in a resource folder (`drawable-hdpi`,
+    /// `mipmap-xxhdpi-v26`); 1 for `nodpi` and folders without a density.
+    pub fn density_of(folder: &str) -> f32 {
+        let parts: Vec<&str> = folder.split('-').collect();
+        [("ldpi", 0.75), ("mdpi", 1.), ("tvdpi", 1.33), ("xxxhdpi", 4.), ("xxhdpi", 3.), ("xhdpi", 2.), ("hdpi", 1.5)]
+            .iter()
+            .find(|(d, _)| parts.contains(d))
+            .map_or(1., |(_, v)| *v)
+    }
+
+    /// Its size in pixels, read from its header (PNG, JPEG, WebP, GIF).
+    pub fn pixels(&self) -> Option<(u32, u32)> {
+        image_size(&self.bytes)
+    }
+
+    /// Its size in dp; a nine-patch's without the border.
+    fn dp(&self) -> Option<(f32, f32)> {
+        let (w, h) = self.pixels()?;
+        let border = if self.nine_patch { 2 } else { 0 };
+        Some((w.saturating_sub(border) as f32 / self.density, h.saturating_sub(border) as f32 / self.density))
+    }
+
+    fn data_uri(&self) -> String {
+        let mime = match self.bytes.get(..4) {
+            Some([0xFF, 0xD8, ..]) => "image/jpeg",
+            Some(b"RIFF") => "image/webp",
+            Some(b"GIF8") => "image/gif",
+            _ => "image/png",
+        };
+        format!("data:{mime};base64,{}", base64(&self.bytes))
+    }
+}
+
+/// An image's size in pixels from its header.
+pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
+    let be32 = |i: usize| Some(u32::from_be_bytes(b.get(i..i + 4)?.try_into().ok()?));
+    let be16 = |i: usize| Some(u16::from_be_bytes(b.get(i..i + 2)?.try_into().ok()?) as u32);
+    let le16 = |i: usize| Some(u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?) as u32);
+    let le24 = |i: usize| Some(u32::from_le_bytes([*b.get(i)?, *b.get(i + 1)?, *b.get(i + 2)?, 0]));
+    if b.starts_with(b"\x89PNG") {
+        return Some((be32(16)?, be32(20)?));
+    }
+    if b.starts_with(b"GIF8") {
+        return Some((le16(6)?, le16(8)?));
+    }
+    if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
+        return match b.get(12..16)? {
+            b"VP8 " => Some((le16(26)? & 0x3FFF, le16(28)? & 0x3FFF)),
+            b"VP8L" => {
+                let bits = u32::from_le_bytes(b.get(21..25)?.try_into().ok()?);
+                Some(((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1))
+            }
+            b"VP8X" => Some((le24(24)? + 1, le24(27)? + 1)),
+            _ => None,
+        };
+    }
+    if b.starts_with(&[0xFF, 0xD8]) {
+        // The first start-of-frame segment.
+        let mut i = 2;
+        while i + 9 < b.len() {
+            if b[i] != 0xFF {
+                return None;
+            }
+            let marker = b[i + 1];
+            if matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+                return Some((be16(i + 7)?, be16(i + 5)?));
+            }
+            i += 2 + be16(i + 2)? as usize;
+        }
+    }
+    None
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ABC[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
 }
 
 /// The roots this module draws.
@@ -46,6 +146,8 @@ const ROOTS: &[&str] = &[
     "rotate",
     "scale",
     "clip",
+    "bitmap",
+    "nine-patch",
 ];
 
 /// Whether an XML file is a drawable the preview can draw.
@@ -149,7 +251,13 @@ impl Writer<'_, '_> {
         if self.depth > 8 {
             return Err("Drawables reference each other in a loop".into());
         }
-        let Some(text) = (self.lookup.drawable)(reference) else { return Ok(()) };
+        let Some(text) = (self.lookup.drawable)(reference) else {
+            // An image file: BitmapDrawable's default gravity fills the bounds.
+            if let Some(bitmap) = (self.lookup.bitmap)(reference) {
+                self.bitmap(&bitmap, rect, "fill", None, 1., out);
+            }
+            return Ok(());
+        };
         let doc = roxmltree::Document::parse(&text).map_err(|e| e.to_string())?;
         self.depth += 1;
         let result = self.draw(doc.root_element(), &text, rect, out);
@@ -161,7 +269,7 @@ impl Writer<'_, '_> {
         if self.depth > 8 {
             return None;
         }
-        let text = (self.lookup.drawable)(reference)?;
+        let Some(text) = (self.lookup.drawable)(reference) else { return (self.lookup.bitmap)(reference)?.dp() };
         let doc = roxmltree::Document::parse(&text).ok()?;
         self.depth += 1;
         let size = self.intrinsic(doc.root_element(), &text);
@@ -206,6 +314,7 @@ impl Writer<'_, '_> {
                 None => self.intrinsic(inline_drawable(node)?, text),
             },
             "rotate" | "scale" | "clip" => self.item_intrinsic(node, text),
+            "bitmap" | "nine-patch" => self.source(node)?.dp(),
             "inset" => {
                 let (w, h) = match attr(node, "drawable") {
                     Some(r) => self.reference_intrinsic(r)?,
@@ -341,10 +450,77 @@ impl Writer<'_, '_> {
                 out.push_str("</g>");
                 result
             }
-            // ClipDrawable and ScaleDrawable draw nothing at level 0; a
-            // bitmap or nine-patch isn't drawn here.
+            "bitmap" | "nine-patch" => {
+                if let Some(bitmap) = self.source(node) {
+                    let gravity = attr(node, "gravity").unwrap_or("fill");
+                    let alpha = attr(node, "alpha").and_then(|a| a.parse::<f32>().ok()).unwrap_or(1.);
+                    let tile = attr(node, "tileMode").filter(|m| *m != "disabled");
+                    self.bitmap(&bitmap, rect, gravity, tile, alpha, out);
+                }
+                Ok(())
+            }
+            // ClipDrawable and ScaleDrawable draw nothing at level 0.
             _ => Ok(()),
         }
+    }
+
+    /// The image of a `<bitmap>` / `<nine-patch>`: its `android:src`.
+    fn source(&self, node: Node) -> Option<Bitmap> {
+        let mut bitmap = (self.lookup.bitmap)(attr(node, "src")?)?;
+        bitmap.nine_patch |= node.has_tag_name("nine-patch");
+        Some(bitmap)
+    }
+
+    /// BitmapDrawable / NinePatchDrawable in `rect`: placed by `gravity`
+    /// (fill stretches, else its own size), or repeated by `tileMode`; a
+    /// nine-patch stretched without its border.
+    fn bitmap(&mut self, bitmap: &Bitmap, rect: Rect, gravity: &str, tile: Option<&str>, alpha: f32, out: &mut String) {
+        let Some((pw, ph)) = bitmap.pixels() else { return };
+        let Some((iw, ih)) = bitmap.dp() else { return };
+        let (x, y, w, h) = rect;
+        let uri = bitmap.data_uri();
+        let opacity = if alpha < 1. { format!(" opacity=\"{alpha}\"") } else { String::new() };
+        if bitmap.nine_patch {
+            // The stretchable areas aren't read: the inner image stretched.
+            let _ = write!(
+                out,
+                "<svg x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" viewBox=\"1 1 {} {}\" preserveAspectRatio=\"none\"{opacity}><image width=\"{pw}\" height=\"{ph}\" preserveAspectRatio=\"none\" href=\"{uri}\"/></svg>",
+                pw.saturating_sub(2),
+                ph.saturating_sub(2)
+            );
+            return;
+        }
+        if tile.is_some() {
+            self.ids += 1;
+            let id = format!("b{}", self.ids);
+            let _ = write!(
+                out,
+                "<defs><pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" x=\"{x}\" y=\"{y}\" width=\"{iw}\" height=\"{ih}\"><image width=\"{iw}\" height=\"{ih}\" preserveAspectRatio=\"none\" href=\"{uri}\"/></pattern></defs><rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"url(#{id})\"{opacity}/>"
+            );
+            return;
+        }
+        let has = |g: &str| gravity.split('|').any(|p| p.trim() == g);
+        let fill_h = has("fill") || has("fill_horizontal");
+        let fill_v = has("fill") || has("fill_vertical");
+        let (bw, bh) = (if fill_h { w } else { iw }, if fill_v { h } else { ih });
+        let bx = if fill_h || has("left") || has("start") {
+            x
+        } else if has("right") || has("end") {
+            x + w - bw
+        } else {
+            x + (w - bw) / 2.
+        };
+        let by = if fill_v || has("top") {
+            y
+        } else if has("bottom") {
+            y + h - bh
+        } else {
+            y + (h - bh) / 2.
+        };
+        let _ = write!(
+            out,
+            "<svg x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" viewBox=\"{x} {y} {w} {h}\" overflow=\"hidden\"><image x=\"{bx}\" y=\"{by}\" width=\"{bw}\" height=\"{bh}\" preserveAspectRatio=\"none\" href=\"{uri}\"{opacity}/></svg>"
+        );
     }
 
     /// GradientDrawable: the shape inset by half the stroke, filled with
@@ -533,7 +709,8 @@ mod tests {
         let color = |r: &str| (r == "@color/accent").then_some(0x3574f0ff);
         let value = |r: &str| (r == "@dimen/radius").then(|| "6dp".to_owned());
         let drawable = |r: &str| files.iter().find(|(name, _)| *name == r).map(|(_, t)| t.clone());
-        render(text, 1., &Lookup { color: &color, value: &value, drawable: &drawable })
+        let bitmap = |_: &str| None;
+        render(text, 1., &Lookup { color: &color, value: &value, drawable: &drawable, bitmap: &bitmap })
     }
 
     #[test]
@@ -572,7 +749,8 @@ mod tests {
         let color = |_: &str| None;
         let value = |_: &str| None;
         let drawable = |r: &str| files.iter().find(|(n, _)| *n == r).map(|(_, t)| t.clone());
-        let list = states(&selector, 16., &Lookup { color: &color, value: &value, drawable: &drawable });
+        let bitmap = |_: &str| None;
+        let list = states(&selector, 16., &Lookup { color: &color, value: &value, drawable: &drawable, bitmap: &bitmap });
         assert_eq!(list.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["pressed", "not enabled", "default"]);
         // Layers with insets over a color; a ripple's mask left out.
         let layers = format!(
@@ -595,7 +773,7 @@ mod tests {
         }
         let looped = [("@drawable/me", format!("<inset {NS} android:drawable=\"@drawable/me\" android:inset=\"1dp\"/>"))];
         assert!(render_with(&looped[0].1, &looped).is_err());
-        assert!(is_previewable(&selector) && !is_previewable("<bitmap/>"));
+        assert!(is_previewable(&selector) && !is_previewable("<adaptive-icon/>"));
     }
 
     #[test]
@@ -624,5 +802,53 @@ mod tests {
         let frames = format!("<animation-list {NS}><item android:drawable=\"@color/accent\" android:duration=\"100\"/><item android:drawable=\"#000\" android:duration=\"100\"/></animation-list>");
         assert!(render_with(&frames, &[]).unwrap().svg.contains("#3574f0"));
         assert!(is_previewable(&rotate) && is_previewable(&inline));
+    }
+
+    /// A PNG's signature and IHDR: enough for its size.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        b.extend(w.to_be_bytes());
+        b.extend(h.to_be_bytes());
+        b.extend([8, 6, 0, 0, 0]);
+        b
+    }
+
+    #[test]
+    fn draws_bitmaps() {
+        assert_eq!(image_size(&png(96, 48)), Some((96, 48)));
+        assert_eq!(image_size(b"GIF89a\x10\x00\x08\x00"), Some((16, 8)));
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 4, 0, 0, 0xFF, 0xC0, 0, 17, 8, 0, 30, 0, 40, 3, 0, 0];
+        assert_eq!(image_size(&jpeg), Some((40, 30)));
+        assert_eq!(base64(b"Man"), "TWFu");
+        assert_eq!(base64(b"Ma"), "TWE=");
+        assert_eq!(Bitmap::density_of("drawable-xxhdpi-v24"), 3.);
+        assert_eq!(Bitmap::density_of("mipmap-hdpi"), 1.5);
+        assert_eq!(Bitmap::density_of("drawable"), 1.);
+        let color = |_: &str| None;
+        let value = |_: &str| None;
+        let drawable = |_: &str| None;
+        let bitmap = |r: &str| match r {
+            "@drawable/photo" => Some(Bitmap { bytes: png(96, 48), density: 2., nine_patch: false }),
+            "@drawable/frame" => Some(Bitmap { bytes: png(22, 12), density: 1., nine_patch: true }),
+            _ => None,
+        };
+        let lookup = Lookup { color: &color, value: &value, drawable: &drawable, bitmap: &bitmap };
+        // A layer list over a referenced PNG: its size in dp, stretched to the layer.
+        let layers = format!("<layer-list {NS}><item android:drawable=\"@drawable/photo\"/><item android:top=\"4dp\" android:drawable=\"@drawable/photo\"/></layer-list>");
+        let image = render(&layers, 1., &lookup).unwrap();
+        assert_eq!((image.width, image.height), (48., 28.));
+        assert!(image.svg.contains("<image x=\"0\" y=\"4\" width=\"48\" height=\"24\" preserveAspectRatio=\"none\" href=\"data:image/png;base64,iVBORw0KGgo"), "{}", image.svg);
+        // <bitmap> centred, repeated, and a nine-patch without its border.
+        let centred = format!("<bitmap {NS} android:src=\"@drawable/photo\" android:gravity=\"center\" android:alpha=\"0.5\"/>");
+        let image = render(&format!("<inset {NS} android:inset=\"10dp\"><bitmap android:src=\"@drawable/photo\" android:gravity=\"center\"/></inset>"), 1., &lookup).unwrap();
+        assert!(image.svg.contains("<image x=\"10\" y=\"10\" width=\"48\" height=\"24\""), "{}", image.svg);
+        assert!(render(&centred, 1., &lookup).unwrap().svg.contains("opacity=\"0.5\""));
+        let tiled = format!("<bitmap {NS} android:src=\"@drawable/photo\" android:tileMode=\"repeat\"/>");
+        assert!(render(&tiled, 1., &lookup).unwrap().svg.contains("<pattern id=\"b1\" patternUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"48\" height=\"24\">"));
+        let nine = format!("<nine-patch {NS} android:src=\"@drawable/frame\"/>");
+        let image = render(&nine, 1., &lookup).unwrap();
+        assert_eq!((image.width, image.height), (20., 10.));
+        assert!(image.svg.contains("viewBox=\"1 1 20 10\" preserveAspectRatio=\"none\"><image width=\"22\" height=\"12\""), "{}", image.svg);
+        assert!(roxmltree::Document::parse(&image.svg).is_ok() && is_previewable(&nine));
     }
 }

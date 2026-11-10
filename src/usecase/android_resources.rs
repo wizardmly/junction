@@ -95,6 +95,23 @@ impl ResourceTable {
         let density = |folder: &str| ["xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi"].iter().position(|d| folder.contains(d)).unwrap_or(5);
         self.declarations(r).iter().filter(|d| [".png", ".webp", ".jpg", ".jpeg", ".gif"].iter().any(|e| d.path.ends_with(e)) && !d.path.ends_with(".9.png")).min_by_key(|d| density(&d.folder))
     }
+
+    /// The image file a drawable reference names for drawing it in a
+    /// drawable preview: the densest, a `.9.png` too.
+    pub fn bitmap(&self, r: &ResourceRef) -> Option<&Declaration> {
+        if !matches!(&*r.kind, "drawable" | "mipmap") {
+            return None;
+        }
+        let density = |folder: &str| ["xxxhdpi", "xxhdpi", "xhdpi", "hdpi", "mdpi"].iter().position(|d| folder.contains(d)).unwrap_or(5);
+        self.declarations(r).iter().filter(|d| [".png", ".webp", ".jpg", ".jpeg", ".gif"].iter().any(|e| d.path.ends_with(e))).min_by_key(|d| density(&d.folder))
+    }
+
+    /// That image, read: its bytes, density and whether it's a nine-patch.
+    pub fn load_bitmap(&self, root: &std::path::Path, r: &ResourceRef) -> Option<crate::domain::drawable::Bitmap> {
+        let d = self.bitmap(r)?;
+        let bytes = std::fs::read(root.join(d.path.to_string())).ok()?;
+        Some(crate::domain::drawable::Bitmap { bytes, density: crate::domain::drawable::Bitmap::density_of(&d.folder), nine_patch: d.path.ends_with(".9.png") })
+    }
 }
 
 #[cfg(test)]
