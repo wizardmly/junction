@@ -1414,8 +1414,8 @@ impl SettingsView {
     /// expressions, Java's Array initializer, Throws list and the like.
     fn wrap_option(&self, page: gpui_kit::Div, query: &str, label: &'static str, lang: StyleLang, value: Wrap, apply: fn(&mut Wrapping, Wrap), cx: &mut Context<Self>) -> gpui_kit::Div {
         let view = cx.entity();
-        // Record components offer Wrap always too (IntelliJ's WRAP_VALUES).
-        let labels: &'static [&'static str] = if label == "Record components:" { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
+        // These offer Wrap always too (IntelliJ's WRAP_VALUES).
+        let labels: &'static [&'static str] = if matches!(label, "Record components:" | "Throws list:" | "Throws keyword:") { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
         let picker = Button::new(SharedString::from(format!("settings-wrap-{label}")))
             .outline()
             .small()

@@ -286,7 +286,7 @@ impl CodeStyle {
                 for (i, f) in force.iter_mut().enumerate() {
                     *f = parts.get(13 + i).and_then(|v| v.parse().ok()).and_then(Force::from_index).unwrap_or_default();
                 }
-                let wrap_at = |i: usize| parts.get(i).and_then(|v| v.parse().ok()).and_then(Wrap::from_index).unwrap_or(Wrap::DoNotWrap);
+                let wrap_at = |i: usize| parts.get(i).and_then(|v| v.parse().ok()).and_then(Wrap::from_index_always).unwrap_or(Wrap::DoNotWrap);
                 let ops = Operations { binary: wrap_at(16), binary_sign_next: parts.get(17).is_some_and(|v| *v == "1"), ternary: wrap_at(18), ternary_signs_next: parts.get(19).is_some_and(|v| *v == "1") };
                 let mut annotations = [AnnotationWrap::DoNotWrap; 3];
                 for (i, a) in annotations.iter_mut().enumerate() {

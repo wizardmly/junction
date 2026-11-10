@@ -1213,6 +1213,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let (a, only) = wrap_enum_constants(&a, w.enum_constants, only, margin);
                 let record = if w.record_wrap == Wrap::WrapAlways && w.record_annotations { AnnotationWrap::WrapAlways } else { AnnotationWrap::DoNotWrap };
                 let (a, only) = if w.call_args == Wrap::WrapAlways { wrap_call_args_always(&a, w.align_args, only) } else { (a, only) };
+                let (a, only) = if w.throws_keyword == Wrap::WrapAlways || w.throws_list == Wrap::WrapAlways { wrap_throws_always(&a, w.throws_keyword == Wrap::WrapAlways, w.throws_list == Wrap::WrapAlways, only) } else { (a, only) };
                 let (a, only) = wrap_always_lists(&a, (w.record_wrap == Wrap::WrapAlways).then_some(w.align_records), (w.params == Wrap::WrapAlways).then_some(w.align_params), only);
                 let (a, only) = wrap_parameter_annotations(&a, false, [w.param_annotations, record], w.single_annotation[1], only, margin);
                 let (a, only) = split_one_line_bodies(&a, w.keep_one_line, w.keep_multiple, w.case_new_line, w.body_new_line, only);
@@ -3527,6 +3528,78 @@ fn wrap_always_lists(text: &str, record: Option<bool>, params: Option<bool>, onl
     (out.join("\n"), only)
 }
 
+/// Java's Throws keyword and Throws list set to Wrap always: `throws` on a
+/// line of its own (continuation indent), and every type after the first
+/// on a line of its own.
+fn wrap_throws_always(text: &str, keyword: bool, list: bool, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+    let lines = scan(text, false);
+    let raw: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut delta: isize = 0;
+    for (ix, line) in raw.iter().enumerate() {
+        let info = &lines[ix];
+        let selected = only.as_ref().is_none_or(|r| r.contains(&ix));
+        let plain = info.starts_in.unwrap_or(State::Code) == State::Code && !info.comment.iter().any(|c| *c);
+        let lead = &line[..line.len() - line.trim_start().len()];
+        let at = if line.trim_start().starts_with("throws ") { Some(lead.len()) } else { throws_at(line, info) };
+        let Some(at) = at.filter(|_| selected && plain) else {
+            out.push((*line).to_owned());
+            continue;
+        };
+        let mut parts: Vec<String> = Vec::new();
+        let mut rest = &line[at..];
+        if keyword && at > lead.len() {
+            parts.push(line[..at].trim_end().to_owned());
+        } else {
+            rest = line;
+        }
+        let rest_lead = if parts.is_empty() { String::new() } else { format!("{lead}        ") };
+        let rest_line = format!("{rest_lead}{rest}");
+        let cont = format!("{lead}        ");
+        match list.then(|| split_throws_list(&rest_line, &cont)).flatten() {
+            Some(items) => parts.extend(items),
+            None => parts.push(rest_line),
+        }
+        delta += parts.len() as isize - 1;
+        out.extend(parts);
+    }
+    let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
+    (out.join("\n"), only)
+}
+
+/// A line with a `throws` list split after each of the list's commas.
+fn split_throws_list(line: &str, cont: &str) -> Option<Vec<String>> {
+    let info = scan(line, false).into_iter().next()?;
+    let lead = line.len() - line.trim_start().len();
+    let throws = if line[lead..].starts_with("throws ") { lead } else { throws_at(line, &info)? } + "throws".len();
+    let mut depth = 0usize;
+    let mut angle = 0usize;
+    let mut commas = Vec::new();
+    for (i, c) in line.char_indices().skip(throws) {
+        if !info.code.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            '<' => angle += 1,
+            '>' if angle > 0 => angle -= 1,
+            '{' | ';' if depth == 0 && angle == 0 => break,
+            ',' if depth == 0 && angle == 0 && !line[i + 1..].trim().is_empty() => commas.push(i + 1),
+            _ => {}
+        }
+    }
+    if commas.is_empty() {
+        return None;
+    }
+    let mut parts = vec![line[..commas[0]].trim_end().to_owned()];
+    for (n, c) in commas.iter().enumerate() {
+        let end = commas.get(n + 1).copied().unwrap_or(line.len());
+        parts.push(format!("{cont}{}", line[*c..end].trim()));
+    }
+    Some(parts)
+}
+
 /// Java's Method call arguments set to Wrap always: in a call whose
 /// arguments are all on one line, every argument after the first starts a
 /// line of its own (under the first with Align when multiline, else a
@@ -4254,7 +4327,7 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
             return Some(parts);
         }
     }
-    if best.is_none() && !wr.kotlin && wr.w.throws_keyword != Wrap::DoNotWrap {
+    if best.is_none() && !wr.kotlin && !matches!(wr.w.throws_keyword, Wrap::DoNotWrap | Wrap::WrapAlways) {
         if let Some(at) = throws_at(line, &info) {
             let head = line[..at].trim_end();
             // Only when the header before it then fits.
@@ -4264,7 +4337,7 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
             }
         }
     }
-    if best.is_none() && !wr.kotlin && wr.w.throws_list != Wrap::DoNotWrap {
+    if best.is_none() && !wr.kotlin && !matches!(wr.w.throws_list, Wrap::DoNotWrap | Wrap::WrapAlways) {
         if let Some(parts) = throws_break(line, &info, &wr.cont, margin, wr.w.throws_list) {
             return Some(parts);
         }
@@ -8351,6 +8424,25 @@ mod tests {
         // Annotations, deconstruction patterns, records and declarations aren't calls.
         let other = "@A(x = 1, y = 2)\nrecord R(int a, int b) {\n    void g(Object o) {\n        if (o instanceof P(int x, int y)) {\n        }\n    }\n}\n";
         assert_eq!(java(w, other), other);
+    }
+
+    #[test]
+    fn wraps_throws_always() {
+        let java = |w: Wrapping, text: &str| {
+            let style = IndentStyle { wrapping: Some(w), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let t = "class A {\n    void f() throws IOException, Ex<A, B> {\n    }\n\n    abstract void g() throws E;\n}\n";
+        assert_eq!(java(Wrapping::JAVA, t), t);
+        let list = Wrapping { throws_list: Wrap::WrapAlways, ..Wrapping::JAVA };
+        let keyword = Wrapping { throws_keyword: Wrap::WrapAlways, ..Wrapping::JAVA };
+        let both = Wrapping { throws_list: Wrap::WrapAlways, ..keyword };
+        assert_eq!(java(list, t), "class A {\n    void f() throws IOException,\n            Ex<A, B> {\n    }\n\n    abstract void g() throws E;\n}\n");
+        assert_eq!(java(keyword, t), "class A {\n    void f()\n            throws IOException, Ex<A, B> {\n    }\n\n    abstract void g()\n            throws E;\n}\n");
+        assert_eq!(java(both, t), "class A {\n    void f()\n            throws IOException,\n            Ex<A, B> {\n    }\n\n    abstract void g()\n            throws E;\n}\n");
+        assert_eq!(java(Wrapping { align_throws: true, align_throws_keyword: true, ..both }, t), "class A {\n    void f()\n    throws IOException,\n           Ex<A, B> {\n    }\n\n    abstract void g()\n    throws E;\n}\n");
     }
 
     #[test]
