@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-67
 title: Reformat：Wrapping and Braces 页剩下的选项（第六十七批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-67
-pr:
+pr: 335
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：`Wrapping::javadoc_layout` 扩到 `[bool; 9]`，加 Use @throws rather than @exception 和 Keep empty @param / @return / @throws tags（Java 默认都开，settings.conf 第 123–126 位）。`javadoc_layout` 在对齐和加空行之前先走一遍：标签行 `@exception` 改成 `@throws`；Keep empty 关掉时删掉只有名字的 `@param` / `@throws` 和单独的 `@return`（后面是续行就不算空）。`reformat_with` 的启用条件改成前六项有开的或后三项有关的。测试 `lays_out_javadoc_tags` 加了这两种情况。Signal 语料：默认 5274 行不变，强制全开 / Keep empty 全关时 5309 行，第二遍 0 行。剩下的放到 sec33-reformat-rest-68。
