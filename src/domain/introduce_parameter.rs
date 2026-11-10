@@ -42,6 +42,57 @@ pub struct ParameterPlan {
     /// A Java method or constructor with a body: where an overload
     /// delegating to it can go.
     pub delegate: Option<DelegateSite>,
+    /// Java: the class's fields with getters used in the expression.
+    pub fields: Vec<FieldUse>,
+    /// The top-level class the function is in (private members are
+    /// accessible there), and the file's package.
+    pub class_range: Range<usize>,
+    pub package: String,
+}
+
+/// A field used in the expression that has a getter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldUse {
+    /// Where (relative to the expression): `rate` or `this.rate`.
+    pub range: Range<usize>,
+    /// `getRate`.
+    pub getter: String,
+    pub access: Access,
+}
+
+/// A member's visibility, as far as calls elsewhere see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    Private,
+    /// Package-private or protected: visible in its package.
+    Package,
+    Public,
+}
+
+/// IntelliJ's "Replace fields used in expressions with their getters".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FieldGetters {
+    #[default]
+    None,
+    /// Where the field isn't accessible from the call.
+    Inaccessible,
+    All,
+}
+
+/// Where a call is, as far as the fields' access goes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CallPlace {
+    /// Outside the function's top-level class.
+    pub outside: bool,
+    /// The calling file's package.
+    pub package: String,
+}
+
+impl CallPlace {
+    /// A call in another file.
+    pub fn elsewhere(text: &str) -> Self {
+        CallPlace { outside: true, package: crate::domain::debugger::package_of(text) }
+    }
 }
 
 /// What "Delegate via overloading method" needs of a Java method: IntelliJ
@@ -141,6 +192,7 @@ pub struct ParameterRequest {
     /// Java: an overload with the old signature passes the expression;
     /// the calls unchanged.
     pub delegate: bool,
+    pub getters: FieldGetters,
 }
 
 impl ParameterRequest {
@@ -156,7 +208,32 @@ pub type Edit = (Range<usize>, String);
 /// The expression a call passes: the function's parameters in it replaced
 /// by the call's arguments, its members qualified by the call's receiver.
 pub fn argument_for(plan: &ParameterPlan, call: &CallSite) -> String {
+    argument_at(plan, call, FieldGetters::None, &CallPlace::default())
+}
+
+/// `argument_for`, the fields replaced by their getters as asked for a
+/// call at `place`.
+pub fn argument_at(plan: &ParameterPlan, call: &CallSite, getters: FieldGetters, place: &CallPlace) -> String {
     let mut edits: Vec<Edit> = Vec::new();
+    let replaced: Vec<&FieldUse> = plan
+        .fields
+        .iter()
+        .filter(|f| match getters {
+            FieldGetters::None => false,
+            FieldGetters::All => true,
+            FieldGetters::Inaccessible => match f.access {
+                Access::Private => place.outside,
+                Access::Package => place.outside && place.package != plan.package,
+                Access::Public => false,
+            },
+        })
+        .collect();
+    let receiver = call.receiver.as_ref().map(|r| if r.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') { r.clone() } else { format!("({r})") });
+    for f in &replaced {
+        let prefix = receiver.as_ref().map_or_else(String::new, |r| format!("{r}."));
+        edits.push((f.range.clone(), format!("{prefix}{}()", f.getter)));
+    }
+    let in_replaced = |r: &Range<usize>| replaced.iter().any(|f| f.range.start <= r.start && r.end <= f.range.end);
     for (range, param) in &plan.uses {
         // A named argument by name, else by position (or the trailing lambda).
         if let Some(value) = call.value_for(&plan.params, *param) {
@@ -164,13 +241,11 @@ pub fn argument_for(plan: &ParameterPlan, call: &CallSite) -> String {
             edits.push((range.clone(), if simple { value.to_owned() } else { format!("({value})") }));
         }
     }
-    if let Some(receiver) = &call.receiver {
-        let simple = receiver.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.');
-        let receiver = if simple { receiver.clone() } else { format!("({receiver})") };
-        for range in &plan.members {
+    if let Some(receiver) = &receiver {
+        for range in plan.members.iter().filter(|r| !in_replaced(r)) {
             edits.push((range.start..range.start, format!("{receiver}.")));
         }
-        for range in &plan.this_refs {
+        for range in plan.this_refs.iter().filter(|r| !in_replaced(r)) {
             edits.push((range.clone(), receiver.clone()));
         }
     }
@@ -233,19 +308,21 @@ pub fn edits(style: ImportStyle, plan: &ParameterPlan, calls_here: &[CallSite], 
         }
     } else if !(request.default_value && !java) {
         for call in calls_here {
-            out.extend(call_edit(plan, call, &request.name));
+            let place = CallPlace { outside: !(plan.class_range.start <= call.name_range.start && call.name_range.start < plan.class_range.end), package: plan.package.clone() };
+            out.extend(call_edit_at(plan, call, &request.name, request.getters, &place));
         }
     }
     Ok(out)
 }
 
 /// The new argument added to a call: named when the call names its
-/// arguments or leaves some to their defaults.
-pub fn call_edit(plan: &ParameterPlan, call: &CallSite, name: &str) -> Option<Edit> {
+/// arguments or leaves some to their defaults; the fields replaced by
+/// their getters as asked for a call at `place`.
+pub fn call_edit_at(plan: &ParameterPlan, call: &CallSite, name: &str, getters: FieldGetters, place: &CallPlace) -> Option<Edit> {
     if call.reference {
         return None;
     }
-    let value = argument_for(plan, call);
+    let value = argument_at(plan, call, getters, place);
     let passed = call.args.len() + usize::from(call.lambda.is_some());
     let named = call.args.iter().any(|(n, _)| n.is_some()) || passed < plan.params.len();
     // The new last parameter takes the trailing lambda's place: the lambda
@@ -281,6 +358,9 @@ mod tests {
             taken: vec![],
             block: None,
             delegate: None,
+            fields: vec![],
+            class_range: 0..text.len(),
+            package: String::new(),
         }
     }
 
@@ -292,7 +372,7 @@ mod tests {
             CallSite { args_close: text.find("2.0)").unwrap() + 3, args: vec![(None, "2.0".into())], receiver: None, ..Default::default() },
             CallSite { args_close: text.find("1)").unwrap() + 1, args: vec![(None, "base + 1".into())], receiver: Some("cart".into()), ..Default::default() },
         ];
-        let request = ParameterRequest { name: "amount".into(), ty: "Double".into(), replace_all: true, default_value: false, declare_final: false, delegate: false };
+        let request = ParameterRequest { name: "amount".into(), ty: "Double".into(), replace_all: true, default_value: false, declare_final: false, delegate: false, getters: FieldGetters::None };
         let out = apply(text, edits(ImportStyle::Kotlin, &p, &calls, &request).unwrap());
         assert_eq!(out, "fun total(price: Double, amount: Double): Double {\n    return amount\n}\nfun use() = total(2.0, 2.0 * rate) + cart.total(base + 1, (base + 1) * cart.rate)\n");
         // A default value: the calls stay.
@@ -300,15 +380,15 @@ mod tests {
         let out = apply(text, edits(ImportStyle::Kotlin, &p, &calls, &request).unwrap());
         assert!(out.starts_with("fun total(price: Double, amount: Double = price * rate): Double {") && out.contains("total(2.0) + cart.total(base + 1)"), "{out}");
         // A taken name; a call with named arguments gets a named one.
-        assert!(check(ImportStyle::Kotlin, &p, &ParameterRequest { name: "price".into(), ty: "Double".into(), replace_all: true, default_value: false, declare_final: false, delegate: false }).is_err());
+        assert!(check(ImportStyle::Kotlin, &p, &ParameterRequest { name: "price".into(), ty: "Double".into(), replace_all: true, default_value: false, declare_final: false, delegate: false, getters: FieldGetters::None }).is_err());
         let named = CallSite { args_close: 10, args: vec![(Some("price".into()), "4.0".into())], receiver: None, ..Default::default() };
-        assert_eq!(call_edit(&p, &named, "amount"), Some((10..10, ", amount = 4.0 * rate".into())));
+        assert_eq!(call_edit_at(&p, &named, "amount", FieldGetters::None, &CallPlace::default()), Some((10..10, ", amount = 4.0 * rate".into())));
         // A trailing lambda isn't last any more: it goes inside.
         let mut p = p.clone();
         p.params.push("block".into());
         let call = "total(2.0) { }";
         let lambda = CallSite { args_open: 5, args_close: 9, args: vec![(None, "2.0".into())], lambda: Some(11..14), lambda_text: "{ }".into(), ..Default::default() };
-        assert_eq!(apply(call, call_edit(&p, &lambda, "amount").into_iter().collect()), "total(2.0, { }, 2.0 * rate)");
+        assert_eq!(apply(call, call_edit_at(&p, &lambda, "amount", FieldGetters::None, &CallPlace::default()).into_iter().collect()), "total(2.0, { }, 2.0 * rate)");
     }
 
     #[test]
@@ -317,7 +397,7 @@ mod tests {
         let mut p = plan(text, "price * rate");
         p.ty = "int".into();
         let calls = [CallSite { args_close: text.find("3)").unwrap() + 1, args: vec![(None, "3".into())], receiver: None, ..Default::default() }];
-        let request = ParameterRequest { name: "amount".into(), ty: "int".into(), replace_all: false, default_value: true, declare_final: false, delegate: false };
+        let request = ParameterRequest { name: "amount".into(), ty: "int".into(), replace_all: false, default_value: true, declare_final: false, delegate: false, getters: FieldGetters::None };
         let out = apply(text, edits(ImportStyle::Java, &p, &calls, &request).unwrap());
         assert_eq!(out, "int total(int price, int amount) { return amount; }\nint use() { return total(3, 3 * rate); }\n");
     }
@@ -339,7 +419,7 @@ mod tests {
             overrides: vec![start..start + 14],
         });
         let calls = [CallSite { args_close: text.find("3)").unwrap() + 1, args: vec![(None, "3".into())], receiver: None, ..Default::default() }];
-        let request = ParameterRequest { name: "amount".into(), ty: "int".into(), replace_all: true, default_value: false, declare_final: true, delegate: true };
+        let request = ParameterRequest { name: "amount".into(), ty: "int".into(), replace_all: true, default_value: false, declare_final: true, delegate: true, getters: FieldGetters::None };
         let out = apply(text, edits(ImportStyle::Java, &p, &calls, &request).unwrap());
         assert_eq!(
             out,
@@ -351,5 +431,38 @@ mod tests {
         site.returns = false;
         let out = apply(text, edits(ImportStyle::Java, &p, &calls, &ParameterRequest { declare_final: false, ..request }).unwrap());
         assert!(out.contains("{\n        this(price, price * rate);\n    }") && out.contains("total(int price, int amount)"), "{out}");
+    }
+
+    #[test]
+    fn fields_become_getters() {
+        // return price * rate + this.base; rate is private, base package-private.
+        let text = "class C {\n    int total(int price) { return price * rate + this.base; }\n    void use(C c) { total(1); c.total(2); }\n}\nclass D { void use(C c) { c.total(3); } }\n";
+        let expr = "price * rate + this.base";
+        let mut p = plan(text, expr);
+        p.class_range = 0..text.find("class D").unwrap();
+        p.this_refs = vec![15..19];
+        p.fields = vec![
+            FieldUse { range: 8..12, getter: "getRate".into(), access: Access::Private },
+            FieldUse { range: 15..24, getter: "getBase".into(), access: Access::Package },
+        ];
+        let call = |at: &str, receiver: Option<&str>| {
+            let start = text.find(at).unwrap();
+            CallSite { name_range: start..start + 5, args_close: start + at.len() - 1, args: vec![(None, "9".into())], receiver: receiver.map(Into::into), ..Default::default() }
+        };
+        let inside = CallPlace { outside: false, package: String::new() };
+        let outside = CallPlace { outside: true, package: String::new() };
+        let abroad = CallPlace { outside: true, package: "other".into() };
+        let c = call("total(2)", Some("c"));
+        assert_eq!(argument_at(&p, &c, FieldGetters::None, &outside), "9 * c.rate + c.base");
+        assert_eq!(argument_at(&p, &c, FieldGetters::Inaccessible, &inside), "9 * c.rate + c.base");
+        assert_eq!(argument_at(&p, &c, FieldGetters::Inaccessible, &outside), "9 * c.getRate() + c.base");
+        assert_eq!(argument_at(&p, &c, FieldGetters::Inaccessible, &abroad), "9 * c.getRate() + c.getBase()");
+        assert_eq!(argument_at(&p, &c, FieldGetters::All, &inside), "9 * c.getRate() + c.getBase()");
+        assert_eq!(argument_at(&p, &call("total(1)", None), FieldGetters::All, &inside), "9 * getRate() + getBase()");
+        // In the function's file: the calls in its class keep the fields, others get getters.
+        let calls = [call("total(1)", None), call("total(2)", Some("c")), call("total(3)", Some("c"))];
+        let request = ParameterRequest { name: "amount".into(), ty: "int".into(), replace_all: true, default_value: false, declare_final: false, delegate: false, getters: FieldGetters::Inaccessible };
+        let out = apply(text, edits(ImportStyle::Java, &p, &calls, &request).unwrap());
+        assert!(out.contains("total(1, 9 * rate + this.base); c.total(2, 9 * c.rate + c.base)") && out.contains("c.total(3, 9 * c.getRate() + c.base)"), "{out}");
     }
 }

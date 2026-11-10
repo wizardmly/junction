@@ -2,7 +2,9 @@
 //! dropdown), the type, "Replace all N occurrences" and, in Kotlin,
 //! "Introduce default value" (the calls then left alone); in Java,
 //! "Declare final" and "Delegate via overloading method", remembered as
-//! IntelliJ's `JavaRefactoringSettings` does.
+//! IntelliJ's `JavaRefactoringSettings` does, and the fields with getters
+//! the expression uses: "Replace fields used in expressions with their
+//! getters".
 
 use std::rc::Rc;
 
@@ -12,12 +14,13 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
+    radio::{Radio, RadioGroup},
     v_flex,
 };
 use gpui_kit::{App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px};
 
 use crate::domain::imports::ImportStyle;
-use crate::domain::introduce_parameter::{ParameterPlan, ParameterRequest, check};
+use crate::domain::introduce_parameter::{FieldGetters, ParameterPlan, ParameterRequest, check};
 use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::dialogs;
@@ -25,6 +28,8 @@ use crate::ui::dialogs;
 thread_local! {
     /// Java's "Declare final" and "Delegate via overloading method", as last chosen.
     static LAST_JAVA: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+    /// "Replace fields used in expressions with their getters", as last chosen.
+    static LAST_GETTERS: std::cell::Cell<FieldGetters> = const { std::cell::Cell::new(FieldGetters::None) };
 }
 
 pub struct IntroduceParameterView {
@@ -39,6 +44,7 @@ pub struct IntroduceParameterView {
     default_value: bool,
     declare_final: bool,
     delegate: bool,
+    getters: FieldGetters,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -51,6 +57,7 @@ impl IntroduceParameterView {
             default_value: self.default_value && self.style == ImportStyle::Kotlin,
             declare_final: self.declare_final && self.style == ImportStyle::Java,
             delegate: self.delegate && self.style == ImportStyle::Java && self.plan.delegate.is_some(),
+            getters: if self.plan.fields.is_empty() { FieldGetters::None } else { self.getters },
         }
     }
 
@@ -112,6 +119,20 @@ impl Render for IntroduceParameterView {
                     cx.notify();
                 })))
             })
+            .when(java && !self.plan.fields.is_empty() && !request.keeps_calls(), |el| {
+                const MODES: [FieldGetters; 3] = [FieldGetters::None, FieldGetters::Inaccessible, FieldGetters::All];
+                el.child(div().text_sm().text_color(palette.text_secondary).child("Replace fields used in expressions with their getters")).child(
+                    RadioGroup::vertical("parameter-getters")
+                        .child(Radio::new("parameter-getters-none").label("Do not replace"))
+                        .child(Radio::new("parameter-getters-inaccessible").label("Replace fields inaccessible in usage context"))
+                        .child(Radio::new("parameter-getters-all").label("Replace all fields"))
+                        .selected_index(MODES.iter().position(|m| *m == self.getters))
+                        .on_change(cx.listener(|this, ix: &usize, _, cx| {
+                            this.getters = MODES[*ix];
+                            cx.notify();
+                        })),
+                )
+            })
             .child(div().text_xs().text_color(palette.text_secondary).child(match calls {
                 0 => format!("The calls of {}() stay as they are", self.plan.function),
                 1 => format!("1 call of {}() gets the new argument", self.plan.function),
@@ -145,7 +166,8 @@ pub fn open(
             }));
         }
         let (declare_final, delegate) = LAST_JAVA.with(|l| l.get());
-        IntroduceParameterView { style, plan, calls, suggestions, name, ty, replace_all: true, default_value: false, declare_final, delegate, _subscriptions }
+        let getters = LAST_GETTERS.with(|l| l.get());
+        IntroduceParameterView { style, plan, calls, suggestions, name, ty, replace_all: true, default_value: false, declare_final, delegate, getters, _subscriptions }
     });
     let focus = view.read(cx).name.clone();
     let on_ok = Rc::new(on_ok);
@@ -156,6 +178,9 @@ pub fn open(
             if style == ImportStyle::Java {
                 let view = view_ok.read(cx);
                 LAST_JAVA.with(|l| l.set((view.declare_final, view.delegate)));
+                if !view.plan.fields.is_empty() {
+                    LAST_GETTERS.with(|l| l.set(view.getters));
+                }
             }
             on_ok(request, window, cx);
             true
