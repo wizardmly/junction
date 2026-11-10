@@ -133,8 +133,77 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<(Paramete
         taken: decls.iter().map(|d| d.name.clone()).collect(),
         block: None,
         delegate: (lang == Lang::Java).then(|| delegate_site(function, text)).flatten(),
+        fields: if lang == Lang::Java { java_fields(node, function, text) } else { Vec::new() },
+        class_range: std::iter::successors(Some(function), |n| n.parent()).filter(|n| n.parent().is_some_and(|p| p.kind() == "program")).map(|n| n.byte_range()).next().unwrap_or(0..text.len()),
+        package: crate::domain::debugger::package_of(text),
     };
     Ok((plan, super::introduce::name_source(lang, node, text)))
+}
+
+/// The fields of the Java method's class used in the expression (`rate`,
+/// `this.rate`) that have a getter (`getRate()`, `isReady()` for a
+/// boolean, no parameters), as IntelliJ's `Util.anyFieldsWithGettersPresent`.
+fn java_fields(expression: Node, function: Node, text: &str) -> Vec<crate::domain::introduce_parameter::FieldUse> {
+    use crate::domain::introduce_parameter::{Access, FieldUse};
+    let Some(class) = function.parent().filter(|p| matches!(p.kind(), "class_body" | "enum_body")) else { return Vec::new() };
+    let members = children(class);
+    let getter_of = |field: &str, ty: &str| {
+        let cap: String = field.chars().take(1).flat_map(char::to_uppercase).chain(field.chars().skip(1)).collect();
+        let names = if ty == "boolean" { vec![format!("is{cap}"), format!("get{cap}")] } else { vec![format!("get{cap}")] };
+        names.into_iter().find(|n| {
+            members.iter().any(|m| {
+                m.kind() == "method_declaration"
+                    && m.child_by_field_name("name").is_some_and(|x| &text[x.byte_range()] == n)
+                    && m.child_by_field_name("parameters").is_some_and(|ps| ps.named_child_count() == 0)
+            })
+        })
+    };
+    // name -> (getter, access)
+    let mut fields: Vec<(String, String, Access)> = Vec::new();
+    for m in members.iter().filter(|m| m.kind() == "field_declaration") {
+        let modifiers = children(*m).into_iter().find(|c| c.kind() == "modifiers").map(|c| &text[c.byte_range()]).unwrap_or("");
+        let words: Vec<&str> = modifiers.split_whitespace().collect();
+        let access = if words.contains(&"private") {
+            Access::Private
+        } else if words.contains(&"public") {
+            Access::Public
+        } else {
+            Access::Package
+        };
+        let ty = m.child_by_field_name("type").map(|t| &text[t.byte_range()]).unwrap_or("");
+        for d in children(*m).into_iter().filter(|d| d.kind() == "variable_declarator") {
+            if let Some(name) = d.child_by_field_name("name").map(|x| text[x.byte_range()].to_owned()) {
+                if let Some(getter) = getter_of(&name, ty) {
+                    fields.push((name, getter, access));
+                }
+            }
+        }
+    }
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    let decls = java_decls(function, text);
+    let local = |name: &str, at: usize| decls.iter().any(|d| d.name == name && d.at <= at && inside(&(at..at), &d.scope));
+    let base = expression.start_byte();
+    let mut out = Vec::new();
+    for n in descendants(expression) {
+        let (name, range) = match n.kind() {
+            "identifier" if is_reference(Lang::Java, n, text) && !local(&text[n.byte_range()], n.start_byte()) => (&text[n.byte_range()], n.byte_range()),
+            "field_access" if n.child_by_field_name("object").is_some_and(|o| o.kind() == "this") => match n.child_by_field_name("field") {
+                Some(f) => (&text[f.byte_range()], n.byte_range()),
+                None => continue,
+            },
+            _ => continue,
+        };
+        // Not written: `rate = …`, `rate++`.
+        if super::extract_method::is_assigned(Lang::Java, n, text) {
+            continue;
+        }
+        if let Some((_, getter, access)) = fields.iter().find(|(f, _, _)| f == name) {
+            out.push(FieldUse { range: range.start - base..range.end - base, getter: getter.clone(), access: *access });
+        }
+    }
+    out
 }
 
 /// Where an overload delegating to a Java method goes, and what it copies.
@@ -447,6 +516,18 @@ mod tests {
         assert_eq!((plan.params.clone(), plan.uses.clone()), (vec!["price".to_owned()], vec![(0..5, 0)]));
         let calls = call_sites(Lang::Java, text, "total", 1);
         assert_eq!(calls.iter().map(|c| c.receiver.clone()).collect::<Vec<_>>(), [None, Some("other".to_owned())]);
+    }
+
+    #[test]
+    fn finds_java_fields_with_getters() {
+        let text = "package p;\nclass A {\n  private int rate;\n  int base;\n  public boolean ready;\n  int noGetter;\n  int getRate() { return rate; }\n  int getBase() { return base; }\n  boolean isReady() { return ready; }\n  int total(int price) { return price * rate + this.base + noGetter + (ready ? 1 : 0); }\n}\nclass B {}\n";
+        let expr = "price * rate + this.base + noGetter + (ready ? 1 : 0)";
+        let at = text.find(expr).unwrap();
+        let (plan, _) = plan(Lang::Java, text, at..at + expr.len()).unwrap();
+        let fields: Vec<(&str, &str, crate::domain::introduce_parameter::Access)> = plan.fields.iter().map(|f| (&expr[f.range.clone()], f.getter.as_str(), f.access)).collect();
+        use crate::domain::introduce_parameter::Access;
+        assert_eq!(fields, [("rate", "getRate", Access::Private), ("this.base", "getBase", Access::Package), ("ready", "isReady", Access::Public)]);
+        assert_eq!((&text[plan.class_range.clone()][..7], plan.package.as_str()), ("class A", "p"));
     }
 
     #[test]
