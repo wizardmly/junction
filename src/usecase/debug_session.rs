@@ -284,11 +284,14 @@ pub struct DebugSession {
     muted: AtomicBool,
     /// Method exit requests, with the methods whose exits stop.
     exits: Mutex<HashMap<u32, Vec<u64>>>,
+    /// Breakpoints on a Kotlin property's accessors, set for a field
+    /// watchpoint on a property without a backing field.
+    accessors: Mutex<std::collections::HashSet<u32>>,
 }
 
 impl DebugSession {
     pub fn new(vm: Arc<dyn DebugVm>) -> Self {
-        Self { vm, state: Mutex::default(), evaluating: AtomicUsize::new(0), muted: AtomicBool::new(false), exits: Mutex::default() }
+        Self { vm, state: Mutex::default(), evaluating: AtomicUsize::new(0), muted: AtomicBool::new(false), exits: Mutex::default(), accessors: Mutex::default() }
     }
 
     /// Changes a breakpoint's condition (none: always stop).
@@ -377,7 +380,9 @@ impl DebugSession {
         let Some(ix) = state.breakpoints.iter().position(|p| p.breakpoint.path == path && p.breakpoint.line == line) else { return Ok(()) };
         let placed = state.breakpoints.remove(ix);
         for request in placed.requests {
-            if placed.breakpoint.field.is_some() {
+            if self.accessors.lock().unwrap().remove(&request) {
+                self.vm.clear_breakpoint(request)?;
+            } else if placed.breakpoint.field.is_some() {
                 // Either kind: clearing the other one does nothing.
                 self.vm.clear_field_watch(request, false)?;
                 self.vm.clear_field_watch(request, true)?;
@@ -454,7 +459,27 @@ impl DebugSession {
             return Ok(requests);
         }
         if let Some(watch) = &breakpoint.field {
-            let Some(field) = self.vm.field_id(class, &watch.name)? else { return Ok(Vec::new()) };
+            let Some(field) = self.vm.field_id(class, &watch.name)? else {
+                // A Kotlin property without a backing field (a custom getter):
+                // IntelliJ's KotlinFieldBreakpoint stops entering its getter
+                // (access) and setter (modification) instead.
+                if !breakpoint.source_name.ends_with(".kt") {
+                    return Ok(Vec::new());
+                }
+                let (getter, setter) = accessor_names(&watch.name);
+                let methods = self.vm.methods(class)?;
+                let mut requests = Vec::new();
+                for (on, name) in [(watch.access, &getter), (watch.modification, &setter)] {
+                    let Some(method) = methods.iter().find(|m| &m.name == name && !m.lines.is_empty()) else { continue };
+                    if on {
+                        let index = method.lines.iter().map(|(ix, _)| *ix).min().unwrap_or(0);
+                        let request = self.vm.set_breakpoint(Location { class, method: method.id, index })?;
+                        self.accessors.lock().unwrap().insert(request);
+                        requests.push(request);
+                    }
+                }
+                return Ok(requests);
+            };
             let mut requests = Vec::new();
             for (on, access) in [(watch.modification, false), (watch.access, true)] {
                 if on {
@@ -949,6 +974,16 @@ impl DebugSession {
     }
 }
 
+/// A Kotlin property's JVM accessors: `getTotal` / `setTotal`, and
+/// `isReady` / `setReady` for a property named `isReady`.
+fn accessor_names(property: &str) -> (String, String) {
+    if let Some(rest) = property.strip_prefix("is").filter(|r| r.starts_with(|c: char| c.is_uppercase())) {
+        return (property.to_owned(), format!("set{rest}"));
+    }
+    let cap: String = property.chars().take(1).flat_map(char::to_uppercase).chain(property.chars().skip(1)).collect();
+    (format!("get{cap}"), format!("set{cap}"))
+}
+
 /// A field watchpoint's event: read or written, the field's class and
 /// object (none: static), the value to be.
 struct FieldHit {
@@ -1300,6 +1335,38 @@ mod tests {
         assert!(logged(session.poll(Duration::ZERO).unwrap()).ends_with(": 'total' is read (4)"));
         session.remove_breakpoint(Path::new("/p/src/test/java/a/CalcTest.java"), 3).unwrap();
         assert_eq!(vm.take_log().iter().filter(|l| l.starts_with("unwatch")).count(), 4);
+    }
+
+    #[test]
+    fn property_watchpoints_without_a_field_stop_in_the_accessors() {
+        assert_eq!(accessor_names("size"), ("getSize".to_owned(), "setSize".to_owned()));
+        assert_eq!(accessor_names("isReady"), ("isReady".to_owned(), "setReady".to_owned()));
+        let mut fake = FakeVm::default();
+        let method = |id, name: &str, lines: &[(u64, u32)]| MethodInfo { id, name: name.into(), signature: "()I".into(), is_static: false, lines: lines.to_vec() };
+        fake.sources = HashMap::from([(20, "Box.kt".into()), (21, "Box.java".into())]);
+        fake.methods = HashMap::from([(20, vec![method(5, "getSize", &[(0, 4), (3, 4)]), method(6, "setSize", &[(2, 5)])]), (21, vec![method(7, "getSize", &[(0, 3)])])]);
+        let vm = Arc::new(fake);
+        vm.loaded.lock().unwrap().extend([ClassRef { id: 20, name: "a.Box".into() }, ClassRef { id: 21, name: "a.Box".into() }]);
+        let session = DebugSession::new(vm.clone());
+        // `val size: Int get() = items.size`: no field named size.
+        let mut watch = LineBreakpoint::new(Path::new("/p/src/main/kotlin/a/Box.kt"), "a".into(), 3);
+        watch.field = Some(FieldWatch { name: "size".into(), access: true, modification: false });
+        assert_eq!(session.add_breakpoint(watch.clone()), Ok(true));
+        let log = vm.take_log();
+        assert_eq!(log.iter().filter(|l| l.starts_with("break")).collect::<Vec<_>>(), ["break 20:5:0"]);
+        // A hit stops like a breakpoint; removing it clears the breakpoint.
+        let request = log.iter().position(|l| l == "break 20:5:0").unwrap() as u32 + 1;
+        vm.send(Suspend::All, vec![DebugEvent::Breakpoint { thread: 1, location: Location { class: 20, method: 5, index: 0 }, request }]);
+        assert!(matches!(session.poll(Duration::ZERO).unwrap().last(), Some(SessionEvent::Paused { reason: PauseReason::Breakpoint, .. })));
+        session.remove_breakpoint(Path::new("/p/src/main/kotlin/a/Box.kt"), 3).unwrap();
+        assert_eq!(vm.take_log().iter().filter(|l| l.starts_with("clear") || l.starts_with("unwatch")).collect::<Vec<_>>(), [&format!("clear {request}")]);
+        // Both: the getter and the setter. A Java field that isn't there: nothing.
+        watch.field = Some(FieldWatch { name: "size".into(), access: true, modification: true });
+        session.add_breakpoint(watch).unwrap();
+        assert_eq!(vm.take_log().iter().filter(|l| l.starts_with("break")).collect::<Vec<_>>(), ["break 20:5:0", "break 20:6:2"]);
+        let mut java = LineBreakpoint::new(Path::new("/p/src/main/java/a/Box.java"), "a".into(), 3);
+        java.field = Some(FieldWatch { name: "size".into(), access: true, modification: true });
+        assert_eq!(session.add_breakpoint(java), Ok(false));
     }
 
     #[test]
