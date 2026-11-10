@@ -4230,10 +4230,26 @@ pub const RIGHT_MARGIN: usize = 120;
 fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) -> Vec<String> {
     let mut out = Vec::with_capacity(lines.len());
     let mut todo: Vec<(String, bool)> = lines.into_iter().zip(choppable).rev().collect();
-    // Binary expressions / Ternary operation Wrap always: a line that fits
-    // breaks at its operators too (after the spacing, so `a+b` counts).
+    // Java's Wrap always for Extends keyword, 'assert', Assignment, Binary
+    // expressions and Ternary operation: a line that fits breaks there too
+    // (after the spacing, so `a+b` counts), the pieces again.
     let always = if wrapper.kotlin { None } else { always_operations(&wrapper.w.ops) };
-    let always_break = |line: &str| always.as_ref().and_then(|ops| scan(line, false).into_iter().next().and_then(|info| operation_break(line, &info, &wrapper.cont, usize::MAX, ops)));
+    let w = &wrapper.w;
+    let java_always = !wrapper.kotlin && (always.is_some() || [w.extends_keyword, w.assert_wrap, w.assignment].contains(&Wrap::WrapAlways));
+    let always_break = |line: &str| -> Option<Vec<String>> {
+        if !java_always {
+            return None;
+        }
+        let info = scan(line, false).into_iter().next()?;
+        let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
+        let cont = wrapper.cont.as_str();
+        let extends = (w.extends_keyword == Wrap::WrapAlways).then(|| extends_keyword_break(line, &info, cont, usize::MAX, Wrap::WrapAlways)).flatten();
+        extends
+            .or_else(|| (w.assert_wrap == Wrap::WrapAlways).then(|| assert_break(line, &is_code, cont, w.assert_colon_next)).flatten())
+            // Not a line that already starts with the value's `=`.
+            .or_else(|| (w.assignment == Wrap::WrapAlways).then(|| assignment_break(line, &info, cont, usize::MAX, w.assign_sign_next)).flatten().filter(|parts| !parts[0].trim().is_empty()))
+            .or_else(|| always.as_ref().and_then(|ops| operation_break(line, &info, cont, usize::MAX, ops)))
+    };
     while let Some((line, choppable)) = todo.pop() {
         // A chop that changes nothing would come back forever.
         match choppable.then(|| always_break(&line).or_else(|| chop(&line, wrapper)).filter(|parts| parts.len() > 1).or_else(|| forced_chop(&line, wrapper))).flatten().filter(|parts| parts.len() > 1) {
@@ -7796,6 +7812,22 @@ mod tests {
             "class A {\n    void f(int a) {\n        if (a > 0)\n            return;\n        else if (a < 0)\n            // negative\n            a++;\n        else\n            for (int i = 0; i < a; i++)\n                if (i > 1)\n                    g(i,\n                            1);\n        while (a > 9)\n            a /= 2;\n        do\n            a--;\n        while (a > 0);\n        if (a == 1) {\n            a = 2;\n        }\n        h(\")\");\n        if (a > 1 &&\n                a < 9)\n            a = 0;\n        while (f(a,\n                b) > 0) {\n            a--;\n        }\n        g();\n    }\n}"
         );
         assert_eq!(kt("fun f(x: Int) {\nif (x > 0)\nprintln(x)\nelse\nreturn\nfor (i in 0..x)\ng(i)\nval y = if (x > 1) 2 else 3\ndo {\ng(x)\n} while (x > 9)\nh()\nreturn if (x > 2)\nx\nelse\n0\n}"), "fun f(x: Int) {\n    if (x > 0)\n        println(x)\n    else\n        return\n    for (i in 0..x)\n        g(i)\n    val y = if (x > 1) 2 else 3\n    do {\n        g(x)\n    } while (x > 9)\n    h()\n    return if (x > 2)\n        x\n    else\n        0\n}");
+    }
+
+    #[test]
+    fn wraps_assignment_assert_and_extends_keyword_always() {
+        let w = |wrapping: Wrapping, text: &str| {
+            let style = IndentStyle { wrapping: Some(wrapping), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "class A extends B implements C {\n    int f() {\n        int total = a + b;\n        total = 2;\n        assert total > 0 : \"positive\";\n        if (total == 1) {\n            return 1;\n        }\n        return total;\n    }\n}";
+        // Lines that fit break too: after each `=` (the value's operators as well) …
+        assert_eq!(w(Wrapping { assignment: Wrap::WrapAlways, ..Wrapping::JAVA }, text), "class A extends B implements C {\n    int f() {\n        int total =\n                a + b;\n        total =\n                2;\n        assert total > 0 : \"positive\";\n        if (total == 1) {\n            return 1;\n        }\n        return total;\n    }\n}");
+        assert_eq!(w(Wrapping { assignment: Wrap::WrapAlways, assign_sign_next: true, ops: Operations { binary: Wrap::WrapAlways, ..Operations::NONE }, ..Wrapping::JAVA }, text), "class A extends B implements C {\n    int f() {\n        int total\n                = a +\n                        b;\n        total\n                = 2;\n        assert total > 0 : \"positive\";\n        if (total == 1) {\n            return 1;\n        }\n        return total;\n    }\n}");
+        // … before each `extends` / `implements`, after an `assert`'s `:`.
+        assert_eq!(w(Wrapping { assert_wrap: Wrap::WrapAlways, extends_keyword: Wrap::WrapAlways, ..Wrapping::JAVA }, text), "class A\n        extends B\n        implements C {\n    int f() {\n        int total = a + b;\n        total = 2;\n        assert total > 0 :\n                \"positive\";\n        if (total == 1) {\n            return 1;\n        }\n        return total;\n    }\n}");
     }
 
     #[test]
