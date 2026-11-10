@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-45
 title: Reformat：Wrapping and Braces 页剩下的选项（第四十五批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-45
-pr:
+pr: 305
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：这批只做了 Java 的 Ensure right margin is not exceeded（WRAP_LONG_LINES）的行注释和字符串。`Wrapping::ensure_margin`（默认关，wrapping 下标 107，加进 `Wrapping::any`）。`chop` 里以 `//` 开头的超长行交给 `comment_break`（最后一个让行宽小于边距的空格，照 testWrapLongLine 的断点；IntelliJ 把空格留在第一行末尾）；别的换行都不适用时 `string_break` 拆跨过边距的字符串（`"…" +` 后面要放得下，不在转义后断；`case` 行和含 `"""` 的行不拆），拆出的行在 `chop_long_lines` 里会再被检查。测试 `ensures_right_margin_is_not_exceeded`。语料：默认 5201 行不变；打开时 5242 行（都是 Log 消息之类的长字符串），第二遍 0 行。没做：块注释和 Javadoc 的重排（testWrapLongLine 里的 `/* … */` 和 `/** … */`）、普通代码在任意位置断行。
