@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-48
 title: Reformat：Wrapping and Braces 页剩下的选项（第四十八批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-48
+pr: 308
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Java 的 Take priority over call chain wrapping（PREFER_PARAMETERS_WRAP，`Wrapping::prefer_params`，settings.conf 第 110 位，默认关，设置页 Java 的复选框）。IntelliJ 里实参的 Wrap 是链式调用 Wrap 的子 Wrap，`WrapProcessor.canReplaceWrapCandidate` 不让子 Wrap 顶替先出现的父 Wrap，所以默认先断链；这个选项给实参 Wrap 设 `ignoreParentWraps`。Junction 的 `chop` 原来总是先拆实参（相当于打开），现在关着时在选实参列表之前先试 `chain_break`，只在断点到实参列表的 `(` 之间全是调用（括号外没有空格和运算符）时用。测试 `prefers_chain_or_argument_wraps`。Signal 语料：默认 5201 行不变；临时把 Java 的链式和实参都设成 Wrap if long，关 / 开第二遍都是 0 行。剩下的放到 sec33-reformat-rest-49。
