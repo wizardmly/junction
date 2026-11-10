@@ -473,7 +473,7 @@ impl Writer<'_, '_> {
 
     /// BitmapDrawable / NinePatchDrawable in `rect`: placed by `gravity`
     /// (fill stretches, else its own size), or repeated by `tileMode`; a
-    /// nine-patch stretched without its border.
+    /// nine-patch by its stretchable regions (`nine_patch`).
     fn bitmap(&mut self, bitmap: &Bitmap, rect: Rect, gravity: &str, tile: Option<&str>, alpha: f32, out: &mut String) {
         let Some((pw, ph)) = bitmap.pixels() else { return };
         let Some((iw, ih)) = bitmap.dp() else { return };
@@ -481,7 +481,31 @@ impl Writer<'_, '_> {
         let uri = bitmap.data_uri();
         let opacity = if alpha < 1. { format!(" opacity=\"{alpha}\"") } else { String::new() };
         if bitmap.nine_patch {
-            // The stretchable areas aren't read: the inner image stretched.
+            if let Some(regions) = crate::domain::nine_patch::regions(&bitmap.bytes) {
+                // NinePatch: each fixed / stretchable piece of the image in
+                // its place, the image itself defined once.
+                self.ids += 1;
+                let id = format!("np{}", self.ids);
+                let (iw, ih) = (pw.saturating_sub(2), ph.saturating_sub(2));
+                let columns = crate::domain::nine_patch::pieces(&regions.columns, iw, w, bitmap.density);
+                let rows = crate::domain::nine_patch::pieces(&regions.rows, ih, h, bitmap.density);
+                let _ = write!(out, "<defs><image id=\"{id}\" width=\"{pw}\" height=\"{ph}\" href=\"{uri}\"/></defs><g{opacity}>");
+                for row in &rows {
+                    for column in &columns {
+                        let (sx, sy) = (column.source.start + 1., row.source.start + 1.);
+                        let (sw, sh) = (column.source.end - column.source.start, row.source.end - row.source.start);
+                        let (tx, ty) = (x + column.target.start, y + row.target.start);
+                        let (tw, th) = (column.target.end - column.target.start, row.target.end - row.target.start);
+                        let _ = write!(
+                            out,
+                            "<svg x=\"{tx}\" y=\"{ty}\" width=\"{tw}\" height=\"{th}\" viewBox=\"{sx} {sy} {sw} {sh}\" preserveAspectRatio=\"none\"><use href=\"#{id}\"/></svg>"
+                        );
+                    }
+                }
+                out.push_str("</g>");
+                return;
+            }
+            // Not decoded: the inner image stretched.
             let _ = write!(
                 out,
                 "<svg x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" viewBox=\"1 1 {} {}\" preserveAspectRatio=\"none\"{opacity}><image width=\"{pw}\" height=\"{ph}\" preserveAspectRatio=\"none\" href=\"{uri}\"/></svg>",
@@ -850,5 +874,16 @@ mod tests {
         assert_eq!((image.width, image.height), (20., 10.));
         assert!(image.svg.contains("viewBox=\"1 1 20 10\" preserveAspectRatio=\"none\"><image width=\"22\" height=\"12\""), "{}", image.svg);
         assert!(roxmltree::Document::parse(&image.svg).is_ok() && is_previewable(&nine));
+        // A decodable one: three columns by three rows, the corners kept.
+        let bitmap = |_: &str| Some(Bitmap { bytes: crate::domain::nine_patch::tests::nine(), density: 1., nine_patch: true });
+        let lookup = Lookup { color: &color, value: &value, drawable: &drawable, bitmap: &bitmap };
+        let image = render(&format!("<inset {NS} android:inset=\"0dp\"><nine-patch android:src=\"@drawable/frame\"/></inset>"), 1., &lookup).unwrap();
+        assert_eq!(image.svg.matches("<use href=\"#np1\"/>").count(), 9, "{}", image.svg);
+        assert!(image.svg.contains("<svg x=\"0\" y=\"0\" width=\"3\" height=\"2\" viewBox=\"1 1 3 2\""), "{}", image.svg);
+        let mut wide = String::new();
+        let mut w = Writer { lookup: &lookup, ids: 0, depth: 0 };
+        w.bitmap(&bitmap("").unwrap(), (0., 0., 40., 6.), "fill", None, 1., &mut wide);
+        assert!(wide.contains("<svg x=\"3\" y=\"2\" width=\"34\" height=\"2\" viewBox=\"4 3 4 2\""), "{wide}");
+        assert!(wide.contains("<svg x=\"37\" y=\"4\" width=\"3\" height=\"2\" viewBox=\"8 5 3 2\""), "{wide}");
     }
 }
