@@ -4271,9 +4271,25 @@ fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) 
         ..*w
     };
     let lists_wrapper = Wrapper { kotlin: true, unit: wrapper.unit, cont: wrapper.cont.clone(), margin: 0, w: only_lists, tabs: wrapper.tabs };
+    // Kotlin's Extends / implements list, Assignment and expression body,
+    // Elvis expressions and Chained function calls Wrap always: the same.
+    let kotlin_always = wrapper.kotlin && (kotlin_lists || [w.extends, w.assignment, w.elvis, w.chain].contains(&Wrap::WrapAlways));
+    let kc = |i: usize| if w.kotlin_cont[i] { wrapper.cont.as_str() } else { wrapper.unit };
     let always_break = |line: &str| -> Option<Vec<String>> {
-        if kotlin_lists {
-            return chop(line, &lists_wrapper).filter(|parts| parts.len() > 1);
+        if wrapper.kotlin {
+            if !kotlin_always {
+                return None;
+            }
+            let info = scan(line, true).into_iter().next()?;
+            let on = |wrap: Wrap| wrap == Wrap::WrapAlways;
+            return on(w.extends)
+                .then(|| supertype_break(line, &info, kc(4), usize::MAX, true))
+                .flatten()
+                // Not a line that already starts with the value.
+                .or_else(|| on(w.assignment).then(|| assignment_break(line, &info, kc(2), usize::MAX, false)).flatten().filter(|parts| always_assigns(&parts[0], line, true)))
+                .or_else(|| on(w.elvis).then(|| elvis_break(line, &info, kc(6), usize::MAX, Wrap::ChopIfLong)).flatten())
+                .or_else(|| on(w.chain).then(|| chain_break(line, &info, kc(3), usize::MAX, w.wrap_first_call)).flatten())
+                .or_else(|| kotlin_lists.then(|| chop(line, &lists_wrapper).filter(|parts| parts.len() > 1)).flatten());
         }
         if !java_always {
             return None;
@@ -4285,7 +4301,7 @@ fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) 
         extends
             .or_else(|| (w.assert_wrap == Wrap::WrapAlways).then(|| assert_break(line, &is_code, cont, w.assert_colon_next)).flatten())
             // Not a line that already starts with the value's `=`.
-            .or_else(|| (w.assignment == Wrap::WrapAlways).then(|| assignment_break(line, &info, cont, usize::MAX, w.assign_sign_next)).flatten().filter(|parts| !parts[0].trim().is_empty()))
+            .or_else(|| (w.assignment == Wrap::WrapAlways).then(|| assignment_break(line, &info, cont, usize::MAX, w.assign_sign_next)).flatten().filter(|parts| always_assigns(&parts[0], line, false)))
             .or_else(|| always.as_ref().and_then(|ops| operation_break(line, &info, cont, usize::MAX, ops)))
     };
     while let Some((line, choppable)) = todo.pop() {
@@ -4424,7 +4440,7 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
         (wr.w.params != Wrap::DoNotWrap && declares(open, 0) && !line[open + 1..close].trim().is_empty() && width(head) < margin).then_some((0, open, close))
     };
     if best.is_none() && wr.kotlin && wr.w.extends != Wrap::DoNotWrap {
-        if let Some(parts) = supertype_break(line, &info, kc(4), margin) {
+        if let Some(parts) = supertype_break(line, &info, kc(4), margin, false) {
             return Some(parts);
         }
     }
@@ -4929,7 +4945,8 @@ fn throws_break(line: &str, info: &Line, cont: &str, margin: usize, mode: Wrap) 
     (parts.len() > 1).then_some(parts)
 }
 
-fn supertype_break(line: &str, info: &Line, unit: &str, margin: usize) -> Option<Vec<String>> {
+/// `always`: Wrap always, every supertype after the first on its own line.
+fn supertype_break(line: &str, info: &Line, unit: &str, margin: usize, always: bool) -> Option<Vec<String>> {
     let lead = line.len() - line.trim_start().len();
     let words = declaration_words(&line[lead..]);
     let declares = match words.as_slice() {
@@ -4984,9 +5001,9 @@ fn supertype_break(line: &str, info: &Line, unit: &str, margin: usize) -> Option
     let tail = line[end..].trim_end();
     let mut parts = Vec::new();
     let mut current = line[..=colon].to_owned();
-    for item in items {
+    for (n, item) in items.into_iter().enumerate() {
         let joined = format!("{current} {item}");
-        if width(&joined) > margin {
+        if width(&joined) > margin || always && n > 0 {
             parts.push(current);
             current = format!("{indent}{unit}{item}");
         } else {
@@ -5319,6 +5336,25 @@ fn builder_cuts(line: &str, info: &Line, names: &[String], all: bool, first: boo
     cuts.sort_unstable();
     cuts.dedup();
     cuts
+}
+
+/// Whether Assignment Wrap always breaks `line` (`head` its part up to
+/// the `=`): not a line starting with the value's `=`, nor a named
+/// argument (`text = "a",`): in Kotlin a declaration, an accessor, an
+/// expression body or a target with `.` / `[`; in Java not a bare name
+/// (an annotation's `value = 1`) unless the line ends the statement.
+fn always_assigns(head: &str, line: &str, kotlin: bool) -> bool {
+    let target = head.trim().trim_end_matches('=').trim();
+    if target.is_empty() {
+        return false;
+    }
+    let bare = target.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$');
+    if kotlin {
+        let words: Vec<&str> = target.split_whitespace().collect();
+        !bare || words.iter().any(|w| matches!(*w, "val" | "var" | "fun")) || target.starts_with("get(") || target.starts_with("set(")
+    } else {
+        !bare || line.trim_end().ends_with(';')
+    }
 }
 
 /// ASSIGNMENT_WRAP and WRAP_EXPRESSION_BODY_FUNCTIONS "wrap if long": the
@@ -7866,6 +7902,25 @@ mod tests {
         // an item too; one item stays (IntelliJ doesn't wrap the first).
         assert_eq!(w(Wrapping { call_args: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "fun f(a: Int, b: Int): Int {\n    val x = g(\n        a,\n        h(\n            b,\n            1\n        )\n    )\n    val y = k(a)\n    if (a > b) return m()\n    return x\n}");
         assert_eq!(w(Wrapping { params: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "fun f(\n    a: Int,\n    b: Int\n): Int {\n    val x = g(a, h(b, 1))\n    val y = k(a)\n    if (a > b) return m()\n    return x\n}");
+    }
+
+    #[test]
+    fn wraps_kotlin_chains_supertypes_assignments_and_elvis_always() {
+        let w = |wrapping: Wrapping, text: &str| {
+            let style = IndentStyle { wrapping: Some(wrapping), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Kotlin, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Kotlin, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "class A : B(), C {\n    fun f(s: String?): Int {\n        val n = s?.length ?: 0\n        return list.map(it).filter(ok).size\n    }\n}";
+        // Lines that fit break too: each supertype after the first …
+        assert_eq!(w(Wrapping { extends: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "class A : B(),\n    C {\n    fun f(s: String?): Int {\n        val n = s?.length ?: 0\n        return list.map(it).filter(ok).size\n    }\n}");
+        // … after `=` …
+        assert_eq!(w(Wrapping { assignment: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "class A : B(), C {\n    fun f(s: String?): Int {\n        val n =\n            s?.length ?: 0\n        return list.map(it).filter(ok).size\n    }\n}");
+        // … before `?:` …
+        assert_eq!(w(Wrapping { elvis: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "class A : B(), C {\n    fun f(s: String?): Int {\n        val n = s?.length\n            ?: 0\n        return list.map(it).filter(ok).size\n    }\n}");
+        // … before each call whose receiver is a call (the first only with Wrap first call).
+        assert_eq!(w(Wrapping { chain: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "class A : B(), C {\n    fun f(s: String?): Int {\n        val n = s?.length ?: 0\n        return list.map(it)\n            .filter(ok).size\n    }\n}");
     }
 
     #[test]
