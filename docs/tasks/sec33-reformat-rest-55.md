@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-55
 title: Reformat：Wrapping and Braces 页剩下的选项（第五十五批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-55
-pr:
+pr: 315
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,8 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Method call arguments 的 Wrap always（IntelliJ CALL_PARAMETERS_WRAP = WRAP_ALWAYS）。
+  - Java 页 Method call arguments 下拉框多了 Wrap always（设置页 `i <= 1` 的两个下拉框用 `Wrap::LABELS_ALWAYS`）。
+  - `wrap_call_args_always` / `split_call_always`：一行里实参都在这行的调用（含 `new P(…)`、链式里的 `.add(…)`），两个以上实参时第一个留在 `(` 后，其余各起一行，Align when multiline 时对齐到 `(` 后，否则续行缩进；拆出来的行再处理一遍，实参里的调用也拆。声明、注解、记录头、解构模式、`switch` / `synchronized`、注释行和字符串里的逗号不算；跨行的调用不动。`chop` 里遇到 WrapAlways 按 Chop down if long。
+  - 测试 `wraps_call_arguments_always`；Signal 语料默认 5201 行不变，强制打开时 15470 行（多出的都是拆开的实参），第二遍 0 行。
+  - 剩下的见 sec33-reformat-rest-56。
