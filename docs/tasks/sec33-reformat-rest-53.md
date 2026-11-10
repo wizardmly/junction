@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-53
 title: Reformat：Wrapping and Braces 页剩下的选项（第五十三批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-53
-pr:
+pr: 313
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,10 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Record components 的 Wrap always 和 Annotations new line（IntelliJ 的 RECORD_COMPONENTS_WRAP = WRAP_ALWAYS、ANNOTATION_NEW_LINE_IN_RECORD_COMPONENT，默认关）。
+  - `Wrap` 加了 `WrapAlways`，目前只有 Record components 的下拉框给（`Wrap::LABELS_ALWAYS` / `from_index_always`，`wrap_option` 按标签判断）；别的 Wrap 下拉框的 Wrap always 还没做。`chop` 里遇到 WrapAlways 的记录头按 Chop down if long 处理。
+  - `wrap_record_components`：记录头 `record R(` 的组件除第一个外各起一行，Align when multiline 时对齐到 `(` 后，否则续行缩进；已经跨行的头里一行多个组件的也拆；类型实参里的 `<…>`、注解值里的括号和逗号不算。
+  - `Wrapping::record_annotations`（settings 第 115 位）：只在 Record components 是 Wrap always 时生效（照 JavaFormatterUtil.isAnnotationOnNewLineInRecordComponent），每个组件的注解各占一行。`wrap_parameter_annotations` 改成两个 wrap：方法参数一个、记录组件一个；记录组件不受 Parameter annotations 和 Do not wrap after single annotation 影响（IntelliJ 里这两项只认 PARAMETER）。原来 Parameter annotations 打开时也会拆记录组件的注解，现在不拆了。
+  - Use flying geese braces：IntelliJ 只在 Groovy 格式化器里实现，Java 的 java-frontback-impl 里除了设置页没有引用，Java 下不起作用，不做。
+  - 测试 `wraps_record_component_annotations`；Signal 语料默认 5201 行不变，强制打开时也是 5201、第二遍 0 行（语料里没有 record）。
+  - 剩下的见 sec33-reformat-rest-54。

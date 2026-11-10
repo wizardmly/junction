@@ -1414,20 +1414,22 @@ impl SettingsView {
     /// expressions, Java's Array initializer, Throws list and the like.
     fn wrap_option(&self, page: gpui_kit::Div, query: &str, label: &'static str, lang: StyleLang, value: Wrap, apply: fn(&mut Wrapping, Wrap), cx: &mut Context<Self>) -> gpui_kit::Div {
         let view = cx.entity();
+        // Record components offer Wrap always too (IntelliJ's WRAP_VALUES).
+        let labels: &'static [&'static str] = if label == "Record components:" { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
         let picker = Button::new(SharedString::from(format!("settings-wrap-{label}")))
             .outline()
             .small()
-            .label(Wrap::LABELS[value.index()])
+            .label(labels[value.index().min(labels.len() - 1)])
             .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
             .dropdown_menu(move |mut menu, _, _| {
-                for (n, name) in Wrap::LABELS.into_iter().enumerate() {
+                for (n, name) in labels.iter().copied().enumerate() {
                     let view = view.clone();
                     menu = menu.item(PopupMenuItem::new(name).checked(value.index() == n).on_click(move |_, _, cx| {
                         view.update(cx, |this, cx| {
                             this.set(
                                 |s| {
                                     let mut w = s.code_style.wrapping(lang);
-                                    apply(&mut w, Wrap::from_index(n).unwrap_or(Wrap::DoNotWrap));
+                                    apply(&mut w, Wrap::from_index_always(n).unwrap_or(Wrap::DoNotWrap));
                                     s.code_style.set_wrapping(lang, w)
                                 },
                                 cx,
@@ -1842,7 +1844,7 @@ impl SettingsView {
                         .child(self.row("Chained method calls: Builder methods:", query, div().w(px(320.)).child(Input::new(&self.builders).small()), cx))
                         .child(self.note("Method names separated by ','; these calls always start a line in a chain", cx));
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 60] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 61] = [
                         ("Method parentheses: New line when body is presented", w.body_new_line, |w, v| w.body_new_line = v),
                         ("Annotation parameters: Align when multiline", w.align_annotation_params, |w, v| w.align_annotation_params = v),
                         ("Annotation parameters: New line after '('", w.annotation_parens[0], |w, v| w.annotation_parens[0] = v),
@@ -1889,6 +1891,7 @@ impl SettingsView {
                         ("Record components: Align when multiline", w.align_records, |w, v| w.align_records = v),
                         ("Record components: New line after '('", w.record_parens[0], |w, v| w.record_parens[0] = v),
                         ("Record components: Place ')' on new line", w.record_parens[1], |w, v| w.record_parens[1] = v),
+                        ("Record components: Annotations new line", w.record_annotations, |w, v| w.record_annotations = v),
                         ("Method declaration parameters: New line after '('", w.param_parens[0], |w, v| w.param_parens[0] = v),
                         ("Method declaration parameters: Place ')' on new line", w.param_parens[1], |w, v| w.param_parens[1] = v),
                         ("Method call arguments: New line after '('", w.call_parens[0], |w, v| w.call_parens[0] = v),
