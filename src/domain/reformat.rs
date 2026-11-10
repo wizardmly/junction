@@ -4257,7 +4257,24 @@ fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) 
     let always = if wrapper.kotlin { None } else { always_operations(&wrapper.w.ops) };
     let w = &wrapper.w;
     let java_always = !wrapper.kotlin && (always.is_some() || [w.extends_keyword, w.assert_wrap, w.assignment].contains(&Wrap::WrapAlways));
+    // Kotlin's Function call arguments / Function declaration parameters
+    // Wrap always: every list with two or more items chopped, as if past
+    // the margin (with only those lists' options on).
+    let kotlin_lists = wrapper.kotlin && (w.call_args == Wrap::WrapAlways || w.params == Wrap::WrapAlways);
+    let only_lists = Wrapping {
+        call_args: if w.call_args == Wrap::WrapAlways { Wrap::ChopIfLong } else { Wrap::DoNotWrap },
+        params: if w.params == Wrap::WrapAlways { Wrap::ChopIfLong } else { Wrap::DoNotWrap },
+        chain: Wrap::DoNotWrap,
+        extends: Wrap::DoNotWrap,
+        assignment: Wrap::DoNotWrap,
+        elvis: Wrap::DoNotWrap,
+        ..*w
+    };
+    let lists_wrapper = Wrapper { kotlin: true, unit: wrapper.unit, cont: wrapper.cont.clone(), margin: 0, w: only_lists, tabs: wrapper.tabs };
     let always_break = |line: &str| -> Option<Vec<String>> {
+        if kotlin_lists {
+            return chop(line, &lists_wrapper).filter(|parts| parts.len() > 1);
+        }
         if !java_always {
             return None;
         }
@@ -4388,8 +4405,9 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
         let past = width(&line[..at]) > margin;
         let commented = info.comment[open..at].iter().any(|c| *c);
         let depth = stack.len();
-        // Java keeps the first item after `(`: one item can't wrap.
-        let wraps = mode(open, depth) != Wrap::DoNotWrap && (wr.kotlin || list_items(line, open, at, &is_code).len() > 1);
+        // Java keeps the first item after `(`: one item can't wrap. Nor in
+        // Kotlin's Wrap always (margin 0): the first item isn't wrapped.
+        let wraps = mode(open, depth) != Wrap::DoNotWrap && (wr.kotlin && wr.margin > 0 || list_items(line, open, at, &is_code).len() > 1);
         // Java's Array initializer: `new int[]{…}`, `= {…}`.
         let array = !wr.kotlin && opener == '{' && c == '}' && is_array_initializer(&line[..open]);
         if (opener == '(' && c == ')' && is_call_or_declaration(&line[..open]) || array) && past && wraps && !inner.trim().is_empty() && !commented {
@@ -7833,6 +7851,21 @@ mod tests {
             "class A {\n    void f(int a) {\n        if (a > 0)\n            return;\n        else if (a < 0)\n            // negative\n            a++;\n        else\n            for (int i = 0; i < a; i++)\n                if (i > 1)\n                    g(i,\n                            1);\n        while (a > 9)\n            a /= 2;\n        do\n            a--;\n        while (a > 0);\n        if (a == 1) {\n            a = 2;\n        }\n        h(\")\");\n        if (a > 1 &&\n                a < 9)\n            a = 0;\n        while (f(a,\n                b) > 0) {\n            a--;\n        }\n        g();\n    }\n}"
         );
         assert_eq!(kt("fun f(x: Int) {\nif (x > 0)\nprintln(x)\nelse\nreturn\nfor (i in 0..x)\ng(i)\nval y = if (x > 1) 2 else 3\ndo {\ng(x)\n} while (x > 9)\nh()\nreturn if (x > 2)\nx\nelse\n0\n}"), "fun f(x: Int) {\n    if (x > 0)\n        println(x)\n    else\n        return\n    for (i in 0..x)\n        g(i)\n    val y = if (x > 1) 2 else 3\n    do {\n        g(x)\n    } while (x > 9)\n    h()\n    return if (x > 2)\n        x\n    else\n        0\n}");
+    }
+
+    #[test]
+    fn wraps_kotlin_lists_always() {
+        let w = |wrapping: Wrapping, text: &str| {
+            let style = IndentStyle { wrapping: Some(wrapping), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Kotlin, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Kotlin, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "fun f(a: Int, b: Int): Int {\n    val x = g(a, h(b, 1))\n    val y = k(a)\n    if (a > b) return m()\n    return x\n}";
+        // Lists of two or more items chopped though they fit, the ones inside
+        // an item too; one item stays (IntelliJ doesn't wrap the first).
+        assert_eq!(w(Wrapping { call_args: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "fun f(a: Int, b: Int): Int {\n    val x = g(\n        a,\n        h(\n            b,\n            1\n        )\n    )\n    val y = k(a)\n    if (a > b) return m()\n    return x\n}");
+        assert_eq!(w(Wrapping { params: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "fun f(\n    a: Int,\n    b: Int\n): Int {\n    val x = g(a, h(b, 1))\n    val y = k(a)\n    if (a > b) return m()\n    return x\n}");
     }
 
     #[test]
