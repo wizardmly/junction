@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-69
 title: Reformat：Wrapping and Braces 页剩下的选项（第六十九批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-69
-pr:
+pr: 337
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：`Wrapping::javadoc_layout` 扩到 `[bool; 12]`，加 Do not wrap one line comments（JD_DO_NOT_WRAP_ONE_LINE_COMMENTS，Java 默认关，settings.conf 第 129 位）。关着时 `javadoc_layout` 先把单独占一行的 `/** text */` 展开成三行（`/**` 和 ` */` 跟原缩进，中间 ` * text`），再走后面的处理；内容为空、以 `*` 开头或中间有 `*/` 的不动，跟在代码后面的不动。旧测试 `puts_the_minimum_blank_lines_between_members` 的期望改成展开后的样子；`ensures_right_margin_is_not_exceeded`（照 IntelliJ testWrapLongLine，那个测试里单行 Javadoc 不展开）里打开这项。新测试在 `lays_out_javadoc_tags`。Signal 语料：默认 5331 → 5417 行（28 个单行 Javadoc 展开），第二遍 0 行。剩下的放到 sec33-reformat-rest-70。
