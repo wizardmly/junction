@@ -386,29 +386,31 @@ impl Writer<'_, '_> {
                     let inset = |name| self.dimen(attr(item, name)).unwrap_or(0.);
                     let (l, t, r, b) = (inset("left"), inset("top"), inset("right"), inset("bottom"));
                     let (x, y, w, h) = (rect.0 + l, rect.1 + t, (rect.2 - l - r).max(0.), (rect.3 - t - b).max(0.));
-                    // An item with a size sits by its gravity, else centered.
-                    let gravity = attr(item, "gravity").unwrap_or("center");
+                    // An item with a size sits by its gravity; without one
+                    // on an axis, at the start / top (LayerDrawable).
+                    let gravity = attr(item, "gravity").unwrap_or("");
+                    let has = |g: &str| gravity.split('|').any(|p| p.trim() == g);
                     let (iw, ih) = (self.dimen(attr(item, "width")).unwrap_or(w).min(w), self.dimen(attr(item, "height")).unwrap_or(h).min(h));
-                    let fill = gravity.contains("fill");
-                    let ix = if fill || iw == w {
+                    let fill = has("fill");
+                    let ix = if fill || has("fill_horizontal") || iw == w {
                         x
-                    } else if gravity.contains("left") || gravity.contains("start") {
-                        x
-                    } else if gravity.contains("right") || gravity.contains("end") {
+                    } else if has("right") || has("end") {
                         x + w - iw
-                    } else {
+                    } else if has("center") || has("center_horizontal") {
                         x + (w - iw) / 2.
-                    };
-                    let iy = if fill || ih == h {
-                        y
-                    } else if gravity.contains("top") {
-                        y
-                    } else if gravity.contains("bottom") {
-                        y + h - ih
                     } else {
-                        y + (h - ih) / 2.
+                        x
                     };
-                    let (iw, ih) = if fill { (w, h) } else { (iw, ih) };
+                    let iy = if fill || has("fill_vertical") || ih == h {
+                        y
+                    } else if has("bottom") {
+                        y + h - ih
+                    } else if has("center") || has("center_vertical") {
+                        y + (h - ih) / 2.
+                    } else {
+                        y
+                    };
+                    let (iw, ih) = (if fill || has("fill_horizontal") { w } else { iw }, if fill || has("fill_vertical") { h } else { ih });
                     self.draw_item(item, text, (ix, iy, iw, ih), out)?;
                 }
                 Ok(())
@@ -455,7 +457,15 @@ impl Writer<'_, '_> {
                     let gravity = attr(node, "gravity").unwrap_or("fill");
                     let alpha = attr(node, "alpha").and_then(|a| a.parse::<f32>().ok()).unwrap_or(1.);
                     let tile = attr(node, "tileMode").filter(|m| *m != "disabled");
-                    self.bitmap(&bitmap, rect, gravity, tile, alpha, out);
+                    match self.color(attr(node, "tint")) {
+                        Some(tint) => {
+                            let filter = self.tint_filter(tint, attr(node, "tintMode").unwrap_or("src_in"), rect, out);
+                            let _ = write!(out, "<g filter=\"url(#{filter})\">");
+                            self.bitmap(&bitmap, rect, gravity, tile, alpha, out);
+                            out.push_str("</g>");
+                        }
+                        None => self.bitmap(&bitmap, rect, gravity, tile, alpha, out),
+                    }
                 }
                 Ok(())
             }
@@ -469,6 +479,29 @@ impl Writer<'_, '_> {
         let mut bitmap = (self.lookup.bitmap)(attr(node, "src")?)?;
         bitmap.nine_patch |= node.has_tag_name("nine-patch");
         Some(bitmap)
+    }
+
+    /// A filter over `rect` that tints what it applies to with `tint` by
+    /// `mode` (PorterDuff: `src_in` keeps the image's alpha, `src_atop`
+    /// paints over its opaque parts, `multiply` / `screen` / `add` blend);
+    /// returns its id.
+    fn tint_filter(&mut self, tint: u32, mode: &str, (x, y, w, h): Rect, out: &mut String) -> String {
+        self.ids += 1;
+        let id = format!("t{}", self.ids);
+        let (c, a) = rgb(tint);
+        let blend = match mode {
+            "src_atop" => "<feComposite in=\"tint\" in2=\"SourceGraphic\" operator=\"atop\"/>",
+            "src_over" => "<feComposite in=\"tint\" in2=\"SourceGraphic\" operator=\"over\"/>",
+            "multiply" => "<feComposite in=\"tint\" in2=\"SourceGraphic\" operator=\"arithmetic\" k1=\"1\"/>",
+            "screen" => "<feBlend in=\"tint\" in2=\"SourceGraphic\" mode=\"screen\"/>",
+            "add" => "<feComposite in=\"tint\" in2=\"SourceGraphic\" operator=\"arithmetic\" k2=\"1\" k3=\"1\"/>",
+            _ => "<feComposite in=\"tint\" in2=\"SourceGraphic\" operator=\"in\"/>",
+        };
+        let _ = write!(
+            out,
+            "<defs><filter id=\"{id}\" filterUnits=\"userSpaceOnUse\" x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" color-interpolation-filters=\"sRGB\"><feFlood flood-color=\"{c}\" flood-opacity=\"{a}\" result=\"tint\"/>{blend}</filter></defs>"
+        );
+        id
     }
 
     /// BitmapDrawable / NinePatchDrawable in `rect`: placed by `gravity`
@@ -885,5 +918,18 @@ mod tests {
         w.bitmap(&bitmap("").unwrap(), (0., 0., 40., 6.), "fill", None, 1., &mut wide);
         assert!(wide.contains("<svg x=\"3\" y=\"2\" width=\"34\" height=\"2\" viewBox=\"4 3 4 2\""), "{wide}");
         assert!(wide.contains("<svg x=\"37\" y=\"4\" width=\"3\" height=\"2\" viewBox=\"8 5 3 2\""), "{wide}");
+        // Tinted: the image's shape in the tint color, or blended by the mode.
+        let tinted = format!("<bitmap {NS} android:src=\"@drawable/frame\" android:tint=\"#80FF0000\"/>");
+        let svg = render(&tinted, 1., &lookup).unwrap().svg;
+        assert!(svg.contains("<feFlood flood-color=\"#ff0000\" flood-opacity=\"0.5019608\" result=\"tint\"/><feComposite in=\"tint\" in2=\"SourceGraphic\" operator=\"in\"/>"), "{svg}");
+        assert!(svg.contains("<g filter=\"url(#t1)\"><defs><image id=\"np2\""), "{svg}");
+        assert!(roxmltree::Document::parse(&svg).is_ok());
+        let multiplied = tinted.replace("/>", " android:tintMode=\"multiply\"/>");
+        assert!(render(&multiplied, 1., &lookup).unwrap().svg.contains("operator=\"arithmetic\" k1=\"1\""));
+        // A layer with a size and no gravity sits at the top start; `center` centres it.
+        let sized = format!("<layer-list {NS}><item android:top=\"20dp\" android:drawable=\"#f00\"/><item android:width=\"10dp\" android:height=\"10dp\" android:drawable=\"#0f0\"/><item android:width=\"10dp\" android:height=\"10dp\" android:gravity=\"center\" android:drawable=\"#00f\"/></layer-list>");
+        let svg = render(&sized.replace("android:top=\"20dp\" ", "android:width=\"40dp\" android:height=\"30dp\" "), 1., &lookup).unwrap().svg;
+        assert!(svg.contains("<rect x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"#00ff00\""), "{svg}");
+        assert!(svg.contains("<rect x=\"15\" y=\"10\" width=\"10\" height=\"10\" fill=\"#0000ff\""), "{svg}");
     }
 }
