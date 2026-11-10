@@ -1830,8 +1830,12 @@ impl SettingsView {
                     page = self.wrap_option(page, query, "Record components:", lang, d.wrapping(lang).record_wrap, |w, v| w.record_wrap = v, cx);
                     page = self.wrap_option(page, query, "Deconstruction list:", lang, d.wrapping(lang).decon_wrap, |w, v| w.decon_wrap = v, cx);
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 31] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 35] = [
                         ("Keep when reformatting: Comment at first column", w.keep_first_column, |w, v| w.keep_first_column = v),
+                        ("Chained method calls: Wrap first call", w.wrap_first_call, |w, v| w.wrap_first_call = v),
+                        ("Group declarations: Align fields in columns", w.group_align[0], |w, v| w.group_align[0] = v),
+                        ("Group declarations: Align variables in columns", w.group_align[1], |w, v| w.group_align[1] = v),
+                        ("Group declarations: Align assignments in columns", w.group_align[2], |w, v| w.group_align[2] = v),
                         ("'switch' statement: Indent 'case' branches", w.indent_case, |w, v| w.indent_case = v),
                         ("Deconstruction list: Align when multiline", w.align_decon, |w, v| w.align_decon = v),
                         ("Deconstruction list: New line after '('", w.decon_parens[0], |w, v| w.decon_parens[0] = v),
@@ -1883,8 +1887,9 @@ impl SettingsView {
                     page = self.wrap_option(page, query, "Elvis expressions:", lang, d.wrapping(lang).elvis, |w, v| w.elvis = v, cx);
                     page = self.annotation_options(page, query, lang, d.wrapping(lang), cx);
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 7] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 8] = [
                         ("Keep when reformatting: Comment at first column", w.keep_first_column, |w, v| w.keep_first_column = v),
+                        ("Chained function calls: Wrap first call", w.wrap_first_call, |w, v| w.wrap_first_call = v),
                         ("'when' statements: Align 'when' branches in columns", w.when_align, |w, v| w.when_align = v),
                         ("'when' statements: Line break after multiline 'when' entry", w.when_break, |w, v| w.when_break = v),
                         ("Function declaration parameters: New line after '('", w.param_parens[0], |w, v| w.param_parens[0] = v),
