@@ -1750,8 +1750,8 @@ impl SettingsView {
                         continue;
                     }
                     let view = cx.entity();
-                    // Java's parameters offer Wrap always too.
-                    let names: &'static [&'static str] = if lang == StyleLang::Java && i == 1 { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
+                    // Java's arguments and parameters offer Wrap always too.
+                    let names: &'static [&'static str] = if lang == StyleLang::Java && i <= 1 { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
                     let picker = Button::new(SharedString::from(format!("settings-wrap-{}-{i}", lang.name())))
                         .outline()
                         .small()

@@ -1212,6 +1212,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let (a, only) = wrap_annotations(&forced, false, &[class, method, field, w.local_annotations, w.enum_annotations], w.single_annotation[0], only, margin);
                 let (a, only) = wrap_enum_constants(&a, w.enum_constants, only, margin);
                 let record = if w.record_wrap == Wrap::WrapAlways && w.record_annotations { AnnotationWrap::WrapAlways } else { AnnotationWrap::DoNotWrap };
+                let (a, only) = if w.call_args == Wrap::WrapAlways { wrap_call_args_always(&a, w.align_args, only) } else { (a, only) };
                 let (a, only) = wrap_always_lists(&a, (w.record_wrap == Wrap::WrapAlways).then_some(w.align_records), (w.params == Wrap::WrapAlways).then_some(w.align_params), only);
                 let (a, only) = wrap_parameter_annotations(&a, false, [w.param_annotations, record], w.single_annotation[1], only, margin);
                 let (a, only) = split_one_line_bodies(&a, w.keep_one_line, w.keep_multiple, w.case_new_line, w.body_new_line, only);
@@ -3526,6 +3527,79 @@ fn wrap_always_lists(text: &str, record: Option<bool>, params: Option<bool>, onl
     (out.join("\n"), only)
 }
 
+/// Java's Method call arguments set to Wrap always: in a call whose
+/// arguments are all on one line, every argument after the first starts a
+/// line of its own (under the first with Align when multiline, else a
+/// continuation indent); the calls inside an argument too.
+fn wrap_call_args_always(text: &str, align: bool, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+    let lines = scan(text, false);
+    let raw: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut delta: isize = 0;
+    for (ix, line) in raw.iter().enumerate() {
+        let info = &lines[ix];
+        let selected = only.as_ref().is_none_or(|r| r.contains(&ix));
+        let plain = info.starts_in.unwrap_or(State::Code) == State::Code && !info.comment.iter().any(|c| *c);
+        if !selected || !plain {
+            out.push((*line).to_owned());
+            continue;
+        }
+        // Each produced line again: the calls inside an argument.
+        let mut todo = vec![(*line).to_owned()];
+        let mut done: Vec<String> = Vec::new();
+        while let Some(current) = todo.pop() {
+            match split_call_always(&current, align) {
+                Some(parts) if done.len() + todo.len() < 200 => todo.extend(parts.into_iter().rev()),
+                _ => done.push(current),
+            }
+        }
+        delta += done.len() as isize - 1;
+        out.extend(done);
+    }
+    let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
+    (out.join("\n"), only)
+}
+
+/// A line split at the arguments of its outermost call with two or more
+/// arguments all on this line; `None` when it has none.
+fn split_call_always(line: &str, align: bool) -> Option<Vec<String>> {
+    let info = scan(line, false).into_iter().next()?;
+    let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
+    let declaration = declaration_paren(line).and(line.find('(')).filter(|_| !matches!(line.split_whitespace().next(), Some("else" | "do" | "assert")));
+    let mut stack: Vec<(usize, char)> = Vec::new();
+    // (depth, open, close) of the outermost call.
+    let mut best: Option<(usize, usize, usize)> = None;
+    for &(at, c) in &info.brackets {
+        if matches!(c, '(' | '[' | '{') {
+            stack.push((at, c));
+            continue;
+        }
+        let Some((open, opener)) = stack.pop() else { continue };
+        if opener != '(' || c != ')' {
+            continue;
+        }
+        let before = &line[..open];
+        let call = is_call_or_declaration(before) && Some(open) != declaration && !annotation_paren(before) && !deconstruction(before) && !record_header(line) && !before.trim_end().ends_with("switch") && !before.trim_end().ends_with("synchronized");
+        if call && list_items(line, open, at, &is_code).len() > 1 && best.is_none_or(|(d, o, _)| stack.len() < d || stack.len() == d && open < o) {
+            best = Some((stack.len(), open, at));
+        }
+    }
+    let (_, open, close) = best?;
+    let items = list_items(line, open, close, &is_code);
+    let lead = &line[..line.len() - line.trim_start().len()];
+    let cont = if align { " ".repeat(line[..=open].chars().count()) } else { format!("{lead}        ") };
+    let mut parts = vec![format!("{}{},", &line[..=open], items[0].trim())];
+    let last = items.len() - 1;
+    for (n, item) in items.iter().enumerate().skip(1) {
+        if n < last {
+            parts.push(format!("{cont}{},", item.trim()));
+        } else {
+            parts.push(format!("{cont}{}{}", item.trim(), &line[close..]));
+        }
+    }
+    Some(parts)
+}
+
 /// Java's 'for()' statement wrap: a header past the margin breaks after its
 /// `;`s (Chop down if long: after each; Wrap if long: where it must), the
 /// parts under the first with Align when multiline.
@@ -4139,6 +4213,8 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
             if wr.w.params == Wrap::WrapAlways { Wrap::ChopIfLong } else { wr.w.params }
         } else if !wr.kotlin && deconstruction(&line[..open]) {
             wr.w.decon_wrap
+        } else if wr.w.call_args == Wrap::WrapAlways {
+            Wrap::ChopIfLong
         } else {
             wr.w.call_args
         }
@@ -8255,6 +8331,26 @@ mod tests {
         assert_eq!(java(pw, t), t);
         // Do not wrap after single annotation is for parameters only.
         assert_eq!(java(Wrapping { record_annotations: true, single_annotation: [true; 2], ..always }, t), o);
+    }
+
+    #[test]
+    fn wraps_call_arguments_always() {
+        let java = |w: Wrapping, text: &str| {
+            let style = IndentStyle { wrapping: Some(w), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let t = "class A {\n    void f(int a, int b) {\n        go(a, max(b, 2), \"x, y\");\n        one(a);\n        if (a > b) {\n            x = new P(1, 2).add(3, 4);\n        }\n        // go(a, b);\n    }\n}\n";
+        assert_eq!(java(Wrapping::JAVA, t), t);
+        let w = Wrapping { call_args: Wrap::WrapAlways, ..Wrapping::JAVA };
+        let o = java(w, t);
+        assert_eq!(o, "class A {\n    void f(int a, int b) {\n        go(a,\n                max(b,\n                        2),\n                \"x, y\");\n        one(a);\n        if (a > b) {\n            x = new P(1,\n                    2).add(3,\n                            4);\n        }\n        // go(a, b);\n    }\n}\n");
+        let aligned = java(Wrapping { align_args: true, ..w }, t);
+        assert_eq!(aligned, "class A {\n    void f(int a, int b) {\n        go(a,\n           max(b,\n               2),\n           \"x, y\");\n        one(a);\n        if (a > b) {\n            x = new P(1,\n                      2).add(3,\n                             4);\n        }\n        // go(a, b);\n    }\n}\n");
+        // Annotations, deconstruction patterns, records and declarations aren't calls.
+        let other = "@A(x = 1, y = 2)\nrecord R(int a, int b) {\n    void g(Object o) {\n        if (o instanceof P(int x, int y)) {\n        }\n    }\n}\n";
+        assert_eq!(java(w, other), other);
     }
 
     #[test]
