@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-33
 title: Reformat：Wrapping and Braces 页剩下的选项（第三十三批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-33
+pr: 290
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,6 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：`Wrapping::wrap_first_call`（WRAP_FIRST_METHOD_IN_CALL_CHAIN，默认关，Java 和 Kotlin 都用）和 `group_align: [bool; 3]`（ALIGN_GROUP_FIELD_DECLARATIONS、ALIGN_CONSECUTIVE_VARIABLE_DECLARATIONS、ALIGN_CONSECUTIVE_ASSIGNMENTS，默认关），settings.conf wrapping 第 82–85 位（现在 86 位）。`chain_break` 多了 `first` 参数：打开时链里第一个调用的 `.` 也能当断点，但要等后面再出现一个调用才算（照 ChainMethodCallsBlockBuilder.canWrap）。Group declarations 是缩进之后的一遍 `group_declarations`：`grouped_line` 认出单行字段（类体里，`declaration_braces` 判断）、局部变量和赋值语句（`+=` 之类也算进赋值组但不对齐），按列补空格；字段组照 IntelliJ 的 SubsequentFieldAligner 对齐类型、名字和 `=`，注释行不断开，有修饰符和没修饰符的分开（IntelliJ 避免长缩进）；变量组照 SubsequentVariablesAlignerConfigurations 对齐名字和 `=`，赋值组对齐 `=`，注释也断开。
+- Signal 语料：默认 0 行变化（Java 5103、Kotlin 25404）；全打开（Java 再把 Chained method calls 设成 Wrap if long）时第二遍 0 行，Java 和原文不同的行反而从 5103 降到 3319（Signal 自己就是对齐成列的风格）。
+- 没做：字段上一行单独写的注解会断开字段组（IntelliJ 会接着对齐）；`int a, b;` 这种一行多个变量不参加对齐；Align simple methods in columns、Multiple expressions in one line、Modifier list、Builder methods、Text blocks 留给 sec33-reformat-rest-34。
