@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-70
 title: Reformat：Wrapping and Braces 页剩下的选项（第七十批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-70
+pr: 338
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：JavaDoc 标签重排，没有设置项（IntelliJ 也没有，开着 JavaDoc 格式化就重排）。新函数 `javadoc_owner`（看 `*/` 后第一行非注解代码：class / interface / enum / record / @interface 是类，`(` 在 `=` 前是方法，其余是别的）和 `reorder_javadoc_tags`（按 param 0、return 1、throws 2、author 3、version 4、其他 5、see 6、since 7、deprecated 8 稳定排序，类只认 param / author / version，方法只认 param / return / throws，别的只认 see / since / deprecated）。在 `javadoc_layout` 加空行、对齐之前做；标签段里有空行、`<pre>` 或没闭合的 `{@code` 时不动（IntelliJ 会把空行当描述的一部分重新生成，这里先不碰）。已经排好的不改，没移动的行原样保留。测试在 `lays_out_javadoc_tags`。Signal 语料 5417 行不变，第二遍 0 行。剩下的（按右边距重排 Javadoc 文字、Kotlin 裸赋值 Wrap always）放到 sec33-reformat-rest-71。

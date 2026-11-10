@@ -1338,6 +1338,7 @@ fn javadoc_layout(text: &str, [blank_after, align_params, align_throws, blank_pa
             texts.insert(at, String::new());
             written.insert(at, None);
         }
+        reorder_javadoc_tags(&mut texts, &mut written, javadoc_owner(&lines[end + 1..]));
         let tags: Vec<bool> = {
             let mut pre = false;
             texts.iter().map(|t| { let tag = !pre && t.starts_with('@'); if t.contains("<pre>") { pre = true; } if t.contains("</pre>") { pre = false; } tag }).collect()
@@ -1414,6 +1415,62 @@ fn javadoc_layout(text: &str, [blank_after, align_params, align_throws, blank_pa
         ix = end + 1;
     }
     out.join("\n")
+}
+
+/// What a Javadoc documents, from the code after it (annotations skipped):
+/// 0 a class (`JDClassComment`), 1 a method (`JDMethodComment`), 2 else.
+fn javadoc_owner(after: &[&str]) -> u8 {
+    let Some(code) = after.iter().map(|l| l.trim()).find(|l| !l.is_empty() && !l.starts_with('@') || l.starts_with("@interface")) else { return 2 };
+    let words: Vec<&str> = code.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '@')).collect();
+    if words.iter().any(|w| matches!(*w, "class" | "interface" | "enum" | "record" | "@interface")) {
+        0
+    } else if code.find('(').is_some_and(|open| code.find('=').is_none_or(|eq| open < eq)) {
+        1
+    } else {
+        2
+    }
+}
+
+/// IntelliJ regenerates a Javadoc's tags in its own order (JDComment /
+/// JDParamListOwnerComment / JDMethodComment / JDClassComment `generate`):
+/// `@param`, `@return`, `@throws` (methods), `@author`, `@version`
+/// (classes), the others as written, `@see`, `@since`, `@deprecated`. Only
+/// tag sections without blank lines or `<pre>` move, each tag with its
+/// later lines.
+fn reorder_javadoc_tags(texts: &mut Vec<String>, written: &mut Vec<Option<&str>>, owner: u8) {
+    let Some(first) = texts.iter().position(|t| t.starts_with('@')) else { return };
+    if texts[first..].iter().any(|t| t.trim().is_empty() || t.contains("<pre>") || t.contains("{@code") && !t.contains('}')) {
+        return;
+    }
+    let rank = |t: &str| match (t.split(char::is_whitespace).next().unwrap_or(""), owner) {
+        ("@param", 0 | 1) => 0,
+        ("@return", 1) => 1,
+        ("@throws" | "@exception", 1) => 2,
+        ("@author", 0) => 3,
+        ("@version", 0) => 4,
+        ("@see", _) => 6,
+        ("@since", _) => 7,
+        ("@deprecated", _) => 8,
+        _ => 5,
+    };
+    // (rank, first line, line count) of each tag.
+    let mut blocks: Vec<(u8, usize, usize)> = Vec::new();
+    for n in first..texts.len() {
+        if texts[n].starts_with('@') {
+            blocks.push((rank(&texts[n]), n, 1));
+        } else if let Some(last) = blocks.last_mut() {
+            last.2 += 1;
+        }
+    }
+    if blocks.windows(2).all(|w| w[0].0 <= w[1].0) {
+        return;
+    }
+    blocks.sort_by_key(|b| b.0);
+    let (moved, kept): (Vec<String>, Vec<Option<&str>>) = blocks.iter().flat_map(|&(_, at, len)| (at..at + len).map(|n| (texts[n].clone(), written[n]))).unzip();
+    texts.truncate(first);
+    written.truncate(first);
+    texts.extend(moved);
+    written.extend(kept);
 }
 
 /// Whether a Javadoc line starts with an HTML tag (IntelliJ's
@@ -8198,6 +8255,11 @@ mod tests {
         assert_eq!(p, paras.replacen("     *\n     * Twice", "     * <p>\n     * Twice", 1));
         assert_eq!(reformat_indented(ImportStyle::Java, &p, None, &style([false, false, false, false, false, true, true, true, true, true, true, true])), p, "stable");
         assert_eq!(reformat_indented(ImportStyle::Java, paras, None, &style([false, false, false, false, false, true, true, true, true, false, false, true])), "class A {\n    /**\n     * Runs it.\n     * Twice.\n     * <ul><li>one</li></ul>\n     * <pre>\n     * a();\n     *\n     * b();\n     * </pre>\n     *\n     * @return the result\n     */\n    int f() {\n        return 1;\n    }\n}");
+        // Tags in IntelliJ's order, per what the Javadoc documents.
+        let order = "class A {\n    /**\n     * Runs it.\n     * @deprecated use g\n     * @return the result\n     * @custom x\n     * @param id the id\n     *   more\n     */\n    @Deprecated\n    int f(int id) {\n        return 1;\n    }\n    /**\n     * @since 2\n     * @author me\n     */\n    class B {}\n}";
+        let sorted = reformat_indented(ImportStyle::Java, order, None, &style([false, false, false, false, false, true, true, true, true, true, true, true]));
+        assert_eq!(sorted, "class A {\n    /**\n     * Runs it.\n     * @param id the id\n     *   more\n     * @return the result\n     * @custom x\n     * @deprecated use g\n     */\n    @Deprecated\n    int f(int id) {\n        return 1;\n    }\n\n    /**\n     * @author me\n     * @since 2\n     */\n    class B {}\n}");
+        assert_eq!(reformat_indented(ImportStyle::Java, &sorted, None, &style([false, false, false, false, false, true, true, true, true, true, true, true])), sorted, "stable");
         // One-line Javadocs become three lines unless kept.
         let one = "class A {\n    /** The id. */\n    int id;\n    /**/\n    int a; /** Inline. */\n}";
         let wrapped = reformat_indented(ImportStyle::Java, one, None, &style([true, true, true, false, false, true, true, true, true, true, true, false]));
