@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-42
 title: Reformat：Wrapping and Braces 页剩下的选项（第四十二批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-42
+pr: 301
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：这批做了 Java 的 Text blocks › Align when multiline 和 'switch' statement › 'case' statement on new line。`Wrapping::align_text_blocks`（默认关，wrapping 下标 101）和 `case_new_line`（默认开，下标 102）。文本块：缩进器在 `starts_in == Raw` 的行用 `text_block_layout` 算出块的最后一行、公共缩进（结尾行算、空白行不算，照 Java 规范和 IntelliJ 的 `extractTextRangesFromLiteralText`）和新缩进（开头行缩进 + 续行缩进，对齐时是开头 `"""` 的列；用 tab 时不对齐），`text_block_line` 逐行重放；行内括号位置跟着平移再交给 `apply_brackets`。`scan` 在 Java 的 Raw 状态里跳过反斜杠转义（`\"""` 不再被当成结尾）。只在有 wrapping（即 Reformat Code）时做。case：`split_one_line_bodies` 多了 `case_line` 参数，`split_case_statement` 在标签的 `:` 后拆行，跳过 `::`、`->` 规则、`{` 块和注释。设置页加了两个复选框。测试 `lays_out_text_blocks_and_case_statements`（含 IntelliJ 的 testTextBlock、test_alignMultilineTextBlock）。语料：默认 5201 行（多出的 98 行都是 `case X: return y;` 拆成两行，IntelliJ 的 JavaSpacePropertyProcessor 在 CASE_STATEMENT_ON_NEW_LINE 开时强制换行），第二遍 0 行；两个选项反过来时 5103 行、第二遍 0 行（语料里没有文本块）。
