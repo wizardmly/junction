@@ -81,6 +81,8 @@ pub struct CodeStyle {
     wrapping: [Wrapping; 4],
     /// Imports › when Optimize Imports uses `*` (Java's, Kotlin's).
     stars: [StarImports; 2],
+    /// Java's Wrapping and Braces › Chained method calls › Builder methods.
+    builders: Vec<String>,
 }
 
 impl Default for CodeStyle {
@@ -88,7 +90,7 @@ impl Default for CodeStyle {
     /// official style by 4, Android's XML style by 4.
     fn default() -> Self {
         let style = |continuation| LangStyle { use_tab: false, indent: 4, continuation };
-        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default(), min_blank: Default::default(), spaces: Default::default(), comments: Default::default(), wrapping: [Wrapping::JAVA, Wrapping::KOTLIN, Wrapping::JAVA, Wrapping::JAVA], stars: [StarImports::default_for(ImportStyle::Java), StarImports::default_for(ImportStyle::Kotlin)] }
+        Self { detect_indents: true, hard_wrap: crate::domain::reformat::RIGHT_MARGIN, langs: [style(8), style(4), style(8), style(4)], blank: Default::default(), min_blank: Default::default(), spaces: Default::default(), comments: Default::default(), wrapping: [Wrapping::JAVA, Wrapping::KOTLIN, Wrapping::JAVA, Wrapping::JAVA], stars: [StarImports::default_for(ImportStyle::Java), StarImports::default_for(ImportStyle::Kotlin)], builders: Vec::new() }
     }
 }
 
@@ -158,6 +160,16 @@ impl CodeStyle {
         self.stars[style as usize] = StarImports { names: stars.names.clamp(1, 999), members: stars.members.clamp(1, 999), packages };
     }
 
+    /// Java's Builder methods: calls that always wrap in a chain.
+    pub fn builders(&self) -> &[String] {
+        &self.builders
+    }
+
+    /// From IntelliJ's comma-separated list (`;` and spaces work too).
+    pub fn set_builders(&mut self, names: &str) {
+        self.builders = names.split([',', ';', ' ']).map(str::trim).filter(|n| !n.is_empty()).map(str::to_owned).collect();
+    }
+
     /// What a file of `lang` is indented with: `.editorconfig`'s unit
     /// first, then the file's own when detecting (XML never does), else
     /// the language's; the continuation in proportion to the indent. Long
@@ -166,7 +178,7 @@ impl CodeStyle {
         let style = self.get(lang);
         let own = if style.use_tab { "\t".to_owned() } else { " ".repeat(style.indent) };
         let detect = self.detect_indents && lang != StyleLang::Xml;
-        IndentStyle { unit: editorconfig.or_else(|| (!detect).then(|| own.clone())), fallback: Some(own), continuation: Some((style.continuation, style.indent)), right_margin: Some(max_line.unwrap_or(self.hard_wrap)), keep_blank: self.keep_blank(lang), min_blank: self.min_blank(lang), spaces: self.spaces(lang), wrapping: matches!(lang, StyleLang::Java | StyleLang::Kotlin).then(|| self.wrapping(lang)) }
+        IndentStyle { unit: editorconfig.or_else(|| (!detect).then(|| own.clone())), fallback: Some(own), continuation: Some((style.continuation, style.indent)), right_margin: Some(max_line.unwrap_or(self.hard_wrap)), keep_blank: self.keep_blank(lang), min_blank: self.min_blank(lang), spaces: self.spaces(lang), wrapping: matches!(lang, StyleLang::Java | StyleLang::Kotlin).then(|| self.wrapping(lang)), builders: if lang == StyleLang::Java { self.builders.clone() } else { Vec::new() } }
     }
 
     /// The settings file's lines: `code_style_java=false,4,8` (tab,
@@ -232,6 +244,9 @@ impl CodeStyle {
                 out.push_str(&format!("code_style_{}_wrapping={}\n", lang.key(), values.join(",")));
             }
         }
+        if !self.builders.is_empty() {
+            out.push_str(&format!("code_style_java_builders={}\n", self.builders.join(",")));
+        }
         for (style, key) in [(ImportStyle::Java, "java"), (ImportStyle::Kotlin, "kotlin")] {
             let stars = self.star_imports(style);
             if stars != StarImports::default_for(style) {
@@ -278,6 +293,10 @@ impl CodeStyle {
                 }
                 self.set_wrapping(lang, Wrapping { keep_line_breaks: parts.get(5).is_none_or(|k| *k != "0"), braces: Braces { force, ..Braces::from_values(braces) }, ops, annotations, enum_constants: parts.get(23).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default(), elvis: parts.get(24).and_then(|v| v.parse().ok()).and_then(Wrap::from_index).unwrap_or(Self::default_wrapping(lang).elvis), local_annotations: parts.get(25).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default(), array_init: wrap_at(26), throws_list: wrap_at(27), throws_keyword: wrap_at(28), annotation_params: wrap_at(29), param_annotations: parts.get(30).and_then(|v| v.parse().ok()).and_then(AnnotationWrap::from_index).unwrap_or_default(), keep_one_line: KeepOneLine::from_values(std::array::from_fn(|i| parts.get(31 + i).is_none_or(|k| *k != "0"))), special_else_if: parts.get(36).is_none_or(|k| *k != "0"), for_wrap: wrap_at(37), align_for: parts.get(38).is_none_or(|k| *k != "0"), for_parens: [39, 40].map(|i| parts.get(i).is_some_and(|k| *k == "1")), resource_wrap: wrap_at(41), align_resources: parts.get(42).is_none_or(|k| *k != "0"), resource_parens: [43, 44].map(|i| parts.get(i).is_some_and(|k| *k == "1")), assert_wrap: wrap_at(45), assert_colon_next: parts.get(46).is_some_and(|k| *k == "1"), call_parens: [47, 48].map(|i| parts.get(i).map_or(Self::default_wrapping(lang).call_parens[i - 47], |k| *k == "1")), param_parens: [49, 50].map(|i| parts.get(i).map_or(Self::default_wrapping(lang).param_parens[i - 49], |k| *k == "1")), expr_parens: [51, 52].map(|i| parts.get(i).is_some_and(|k| *k == "1")), align_params: parts.get(53).is_none_or(|k| *k != "0"), align_args: parts.get(54).is_some_and(|k| *k == "1"), record_wrap: wrap_at(55), align_records: parts.get(56).is_none_or(|k| *k != "0"), record_parens: [57, 58].map(|i| parts.get(i).is_some_and(|k| *k == "1")), align_binary: parts.get(59).is_some_and(|k| *k == "1"), align_ternary: parts.get(60).is_some_and(|k| *k == "1"), align_throws: parts.get(61).is_some_and(|k| *k == "1"), align_extends: parts.get(62).is_some_and(|k| *k == "1"), align_assignment: parts.get(63).is_some_and(|k| *k == "1"), align_chains: parts.get(64).is_some_and(|k| *k == "1"), align_arrays: parts.get(65).is_some_and(|k| *k == "1"), when_align: parts.get(66).is_some_and(|k| *k == "1"), when_break: parts.get(67).is_none_or(|k| *k != "0"), decon_wrap: wrap_at(68), align_decon: parts.get(69).is_none_or(|k| *k != "0"), decon_parens: [70, 71].map(|i| parts.get(i).is_none_or(|k| *k != "0")), kotlin_cont: std::array::from_fn(|i| parts.get(72 + i).is_some_and(|k| *k == "1")), keep_first_column: parts.get(80).is_none_or(|k| *k != "0"), indent_case: parts.get(81).is_none_or(|k| *k != "0"), wrap_first_call: parts.get(82).is_some_and(|k| *k == "1"), group_align: std::array::from_fn(|i| parts.get(83 + i).is_some_and(|k| *k == "1")), keep_multiple: parts.get(86).is_some_and(|k| *k == "1"), modifier_wrap: parts.get(87).is_some_and(|k| *k == "1"), align_simple_methods: parts.get(88).is_some_and(|k| *k == "1"), assign_sign_next: parts.get(89).is_some_and(|k| *k == "1"), indent_break: parts.get(90).is_none_or(|k| *k != "0"), array_parens: [91, 92].map(|i| parts.get(i).is_some_and(|k| *k == "1")), single_annotation: [93, 94].map(|i| parts.get(i).is_some_and(|k| *k == "1")), ..Wrapping::from_values(v) });
             }
+            return true;
+        }
+        if key == "code_style_java_builders" {
+            self.set_builders(value);
             return true;
         }
         if let Some(style) = match key {
@@ -376,6 +395,11 @@ mod tests {
         assert!(style.lines().contains("code_style_java_wrapping=2,0,0,0,0,1,1,0,0,0,0,0,0,2,0,1,1,1,2,0,3,0,1,2,0,3,2,1,1,2,1,1,0,0,1,1,0,2,1,0,1,1,0,1,0,2,1,1,0,0,1,0,1,0,1,2,1,1,0,1,1,0,1,0,1,0,0,1,2,1,0,1,0,0,0,0,0,0,0,0,1,0,1,1,0,1,1,1,1,1,0,1,0,0,1\n"));
         style.set_star_imports(ImportStyle::Java, StarImports { names: 99, members: 0, packages: vec!["a.b.*".into(), " ".into(), "c.**".into()] });
         assert!(style.lines().contains("code_style_java_imports=99,1,a.b.*;c.**\n") && !style.lines().contains("kotlin_imports"));
+        assert!(!style.lines().contains("builders"));
+        style.set_builders(" add, put;; build ");
+        assert!(style.lines().contains("code_style_java_builders=add,put,build\n"));
+        assert_eq!(style.indents(StyleLang::Java, None, None).builders, ["add", "put", "build"]);
+        assert!(style.indents(StyleLang::Kotlin, None, None).builders.is_empty());
         let mut read = CodeStyle::default();
         for line in style.lines().lines() {
             let (k, v) = line.split_once('=').unwrap();

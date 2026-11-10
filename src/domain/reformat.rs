@@ -703,6 +703,9 @@ pub struct IndentStyle {
     pub spaces: Spaces,
     /// Wrapping and Braces (`None`: the language's defaults).
     pub wrapping: Option<Wrapping>,
+    /// Java's Chained method calls › Builder methods: calls by these names
+    /// always start a line of their own.
+    pub builders: Vec<String>,
 }
 
 /// Code Style › Wrapping and Braces: how a long construct wraps.
@@ -1126,6 +1129,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let (a, only) = wrap_for_statements(&a, "try", w.resource_wrap, w.align_resources, only, margin);
                 let (a, only) = header_parens(&a, "for", w.for_parens, only);
                 let (a, only) = header_parens(&a, "try", w.resource_parens, only);
+                let (a, only) = wrap_builder_calls(&a, &indents.builders, w.wrap_first_call, only);
                 let (a, only) = list_parens(&a, false, w.call_parens, w.param_parens, w.record_parens, w.expr_parens, w.decon_parens, w.array_parens, only);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
@@ -4102,6 +4106,105 @@ fn chain_break(line: &str, info: &Line, unit: &str, margin: usize, first: bool) 
     Some(vec![line[..cut].trim_end().to_owned(), format!("{indent}{unit}{}", &line[cut..])])
 }
 
+/// Java's Chained method calls › Builder methods (BUILDER_METHODS): a
+/// chained call by one of `names` always wraps, as IntelliJ's
+/// `ChainMethodCallsBlockBuilder` does, except the chain's first call
+/// (unless Wrap first call is on and a call follows it). Only a line's
+/// outermost chain, not one inside an argument.
+fn wrap_builder_calls(text: &str, names: &[String], first: bool, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+    if names.is_empty() || !names.iter().any(|n| text.contains(&format!(".{n}("))) {
+        return (text.to_owned(), only);
+    }
+    let lines = scan(text, false);
+    let raw: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    let mut delta: isize = 0;
+    for (ix, line) in raw.iter().enumerate() {
+        let info = &lines[ix];
+        let plain = info.starts_in.unwrap_or(State::Code) == State::Code;
+        let cuts = if plain && only.as_ref().is_none_or(|r| r.contains(&ix)) { builder_cuts(line, info, names, first) } else { Vec::new() };
+        if cuts.is_empty() {
+            out.push((*line).to_owned());
+            continue;
+        }
+        let lead = &line[..line.len() - line.trim_start().len()];
+        let mut from = 0;
+        for c in cuts {
+            let piece = &line[from..c];
+            out.push(if from == 0 { piece.trim_end().to_owned() } else { format!("{lead}{}", piece.trim()) });
+            from = c;
+            delta += 1;
+        }
+        out.push(format!("{lead}{}", line[from..].trim()));
+    }
+    let only = only.map(|r| r.start..(r.end as isize + delta).max(r.start as isize) as usize);
+    (out.join("\n"), only)
+}
+
+/// Where `wrap_builder_calls` breaks `line`: before each builder call's `.`.
+fn builder_cuts(line: &str, info: &Line, names: &[String], first: bool) -> Vec<usize> {
+    let lead = line.len() - line.trim_start().len();
+    let mut cuts = Vec::new();
+    // Per bracket depth: calls so far in the chain at hand, and its first
+    // call's dot when that is a builder (cut once another call follows).
+    let mut chains: Vec<(usize, Option<usize>)> = vec![(usize::from(line[lead..].starts_with('.')), None)];
+    for (i, c) in line.char_indices().skip(lead) {
+        if !info.code.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        let ident_before = line[..i].trim_end().ends_with(|p: char| p.is_alphanumeric() || p == '_');
+        match c {
+            '(' | '[' | '{' => {
+                if c == '(' && ident_before {
+                    if let Some(top) = chains.last_mut() {
+                        top.0 += 1;
+                    }
+                }
+                chains.push((0, None));
+            }
+            ')' | ']' | '}' => {
+                if chains.len() > 1 {
+                    chains.pop();
+                }
+            }
+            '.' if i > lead => {
+                let after_receiver = line[..i].ends_with(|p: char| p.is_alphanumeric() || p == '_' || p == ')');
+                let name: String = line[i + 1..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                let calls = !name.is_empty() && line[i + 1 + name.len()..].trim_start().starts_with('(');
+                // Only the line's own chain: one in brackets stays (the
+                // indenter has no continuation inside a wrapped argument).
+                let outer = chains.len() == 1;
+                let Some(top) = chains.last_mut() else { continue };
+                if !(after_receiver && calls && outer) {
+                    continue;
+                }
+                if top.0 > 0 {
+                    if let Some(f) = top.1.take() {
+                        cuts.push(f);
+                    }
+                }
+                if names.iter().any(|n| *n == name) {
+                    if top.0 > 0 {
+                        cuts.push(i);
+                    } else if first {
+                        top.1 = Some(i);
+                    }
+                }
+            }
+            // Another expression starts: a new chain.
+            c if !(c.is_alphanumeric() || matches!(c, '_' | ' ' | '\t' | '.')) => {
+                if let Some(top) = chains.last_mut() {
+                    *top = (0, None);
+                }
+            }
+            _ => {}
+        }
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts
+}
+
 /// ASSIGNMENT_WRAP and WRAP_EXPRESSION_BODY_FUNCTIONS "wrap if long": the
 /// line broken after its first `=` outside brackets, the value an indent
 /// deeper, when the value then fits.
@@ -7006,6 +7109,22 @@ mod tests {
         let kept = java(single, f);
         assert!(kept.contains("    @Nullable String a;\n    @Nullable\n    @Inject\n    String b;\n") && kept.contains("    void f(@Nullable String x, @A\n           @B\n           int y)"), "{kept}");
         assert_eq!(java(single, &kept), kept);
+    }
+
+    #[test]
+    fn wraps_builder_methods() {
+        let java = |w: Wrapping, names: &[&str], text: &str| reformat_indented(ImportStyle::Java, text, None, &IndentStyle { wrapping: Some(w), builders: names.iter().map(|n| n.to_string()).collect(), ..Default::default() });
+        let t = "class A {\n    void f() {\n        Foo f = Foo.builder().name(\"a\").add(g(1).add(2)).build();\n        list.add(1);\n        b.add(1).add(2);\n    }\n}\n";
+        assert_eq!(java(Wrapping::JAVA, &[], t), t);
+        // The first call stays, every builder call after it wraps.
+        let o = java(Wrapping::JAVA, &["add", "build"], t);
+        assert_eq!(o, "class A {\n    void f() {\n        Foo f = Foo.builder().name(\"a\")\n                .add(g(1).add(2))\n                .build();\n        list.add(1);\n        b.add(1)\n                .add(2);\n    }\n}\n");
+        assert_eq!(java(Wrapping::JAVA, &["add", "build"], &o), o);
+        // Wrap first call: the first too, when a call follows it.
+        let first = Wrapping { wrap_first_call: true, ..Wrapping::JAVA };
+        let f = java(first, &["add"], t);
+        assert!(f.contains("        list.add(1);\n        b\n                .add(1)\n                .add(2);\n"), "{f}");
+        assert_eq!(java(first, &["add"], &f), f);
     }
 
     #[test]
