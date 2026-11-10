@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-40
 title: Reformat：Wrapping and Braces 页剩下的选项（第四十批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-40
+pr: 297
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：这批只做 Java 的 Multi-catch types。`Wrapping::catch_wrap`（默认 Wrap if long）/ `align_catch`（默认开），settings.conf wrapping 下标 98、99（旧文件缺位时用默认）。复用 `wrap_for_statements`：关键字是 `catch` 时在括号里的 `|` 后断开（`;` 不算），`keyword_open` 对 `catch` 允许前面有 `}`；缩进器里 `keyword_paren(.., "catch")` 在 `multi_catch` 行上提供对齐列。设置页加了 Wrap 下拉框和对齐复选框。测试 `wraps_multi_catch_types`。Labeled statement 没做：IntelliJ 的 CommonCodeStyleSettings 里找不到 LABELED_STATEMENT_WRAP 的默认值定义，留给后面查清楚再做。语料：Signal 没有超长 multi-catch，默认和强制 Chop 都 0 行。
