@@ -1830,8 +1830,11 @@ impl SettingsView {
                     page = self.wrap_option(page, query, "Record components:", lang, d.wrapping(lang).record_wrap, |w, v| w.record_wrap = v, cx);
                     page = self.wrap_option(page, query, "Deconstruction list:", lang, d.wrapping(lang).decon_wrap, |w, v| w.decon_wrap = v, cx);
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 37] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 40] = [
                         ("Keep when reformatting: Comment at first column", w.keep_first_column, |w, v| w.keep_first_column = v),
+                        ("Group declarations: Align simple methods in columns", w.align_simple_methods, |w, v| w.align_simple_methods = v),
+                        ("Assignment statement: Assignment sign on next line", w.assign_sign_next, |w, v| w.assign_sign_next = v),
+                        ("'switch' statement: Indent 'break' from 'case'", w.indent_break, |w, v| w.indent_break = v),
                         ("Keep when reformatting: Multiple expressions in one line", w.keep_multiple, |w, v| w.keep_multiple = v),
                         ("Modifier list: Wrap after modifier list", w.modifier_wrap, |w, v| w.modifier_wrap = v),
                         ("Chained method calls: Wrap first call", w.wrap_first_call, |w, v| w.wrap_first_call = v),
