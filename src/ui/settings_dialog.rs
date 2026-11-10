@@ -1830,8 +1830,12 @@ impl SettingsView {
                     page = self.wrap_option(page, query, "Record components:", lang, d.wrapping(lang).record_wrap, |w, v| w.record_wrap = v, cx);
                     page = self.wrap_option(page, query, "Deconstruction list:", lang, d.wrapping(lang).decon_wrap, |w, v| w.decon_wrap = v, cx);
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 40] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 44] = [
                         ("Keep when reformatting: Comment at first column", w.keep_first_column, |w, v| w.keep_first_column = v),
+                        ("Array initializer: New line after '{'", w.array_parens[0], |w, v| w.array_parens[0] = v),
+                        ("Array initializer: Place '}' on new line", w.array_parens[1], |w, v| w.array_parens[1] = v),
+                        ("Field annotations: Do not wrap after single annotation", w.single_annotation[0], |w, v| w.single_annotation[0] = v),
+                        ("Parameter annotations: Do not wrap after single annotation", w.single_annotation[1], |w, v| w.single_annotation[1] = v),
                         ("Group declarations: Align simple methods in columns", w.align_simple_methods, |w, v| w.align_simple_methods = v),
                         ("Assignment statement: Assignment sign on next line", w.assign_sign_next, |w, v| w.assign_sign_next = v),
                         ("'switch' statement: Indent 'break' from 'case'", w.indent_break, |w, v| w.indent_break = v),
