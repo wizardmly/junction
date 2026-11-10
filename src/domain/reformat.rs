@@ -1212,7 +1212,9 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let (a, only) = wrap_annotations(&forced, false, &[class, method, field, w.local_annotations, w.enum_annotations], w.single_annotation[0], only, margin);
                 let (a, only) = wrap_enum_constants(&a, w.enum_constants, only, margin);
                 let record = if w.record_wrap == Wrap::WrapAlways && w.record_annotations { AnnotationWrap::WrapAlways } else { AnnotationWrap::DoNotWrap };
-                let (a, only) = if w.call_args == Wrap::WrapAlways { wrap_call_args_always(&a, w.align_args, only) } else { (a, only) };
+                let always = |wrap: Wrap, align: bool| (wrap == Wrap::WrapAlways).then_some(align);
+                let kinds = AlwaysLists { call: always(w.call_args, w.align_args), decon: always(w.decon_wrap, w.align_decon), annotation: always(w.annotation_params, w.align_annotation_params), array: always(w.array_init, w.align_arrays) };
+                let (a, only) = if kinds.any() { wrap_lists_always(&a, kinds, only) } else { (a, only) };
                 let (a, only) = if w.throws_keyword == Wrap::WrapAlways || w.throws_list == Wrap::WrapAlways { wrap_throws_always(&a, w.throws_keyword == Wrap::WrapAlways, w.throws_list == Wrap::WrapAlways, only) } else { (a, only) };
                 let (a, only) = wrap_always_lists(&a, (w.record_wrap == Wrap::WrapAlways).then_some(w.align_records), (w.params == Wrap::WrapAlways).then_some(w.align_params), only);
                 let (a, only) = wrap_parameter_annotations(&a, false, [w.param_annotations, record], w.single_annotation[1], only, margin);
@@ -3600,11 +3602,27 @@ fn split_throws_list(line: &str, cont: &str) -> Option<Vec<String>> {
     Some(parts)
 }
 
-/// Java's Method call arguments set to Wrap always: in a call whose
-/// arguments are all on one line, every argument after the first starts a
-/// line of its own (under the first with Align when multiline, else a
-/// continuation indent); the calls inside an argument too.
-fn wrap_call_args_always(text: &str, align: bool, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+/// Java's lists set to Wrap always, each `Some(align)`: Method call
+/// arguments, Deconstruction list, Annotation parameters, Array initializer.
+#[derive(Clone, Copy, Default)]
+struct AlwaysLists {
+    call: Option<bool>,
+    decon: Option<bool>,
+    annotation: Option<bool>,
+    array: Option<bool>,
+}
+
+impl AlwaysLists {
+    fn any(&self) -> bool {
+        self.call.is_some() || self.decon.is_some() || self.annotation.is_some() || self.array.is_some()
+    }
+}
+
+/// Java's lists set to Wrap always: in a list whose items are all on one
+/// line, every item after the first starts a line of its own (under the
+/// first with Align when multiline, else a continuation indent); the lists
+/// inside an item too.
+fn wrap_lists_always(text: &str, kinds: AlwaysLists, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
     let lines = scan(text, false);
     let raw: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
@@ -3617,11 +3635,11 @@ fn wrap_call_args_always(text: &str, align: bool, only: Option<Range<usize>>) ->
             out.push((*line).to_owned());
             continue;
         }
-        // Each produced line again: the calls inside an argument.
+        // Each produced line again: the lists inside an item.
         let mut todo = vec![(*line).to_owned()];
         let mut done: Vec<String> = Vec::new();
         while let Some(current) = todo.pop() {
-            match split_call_always(&current, align) {
+            match split_list_always(&current, kinds) {
                 Some(parts) if done.len() + todo.len() < 200 => todo.extend(parts.into_iter().rev()),
                 _ => done.push(current),
             }
@@ -3633,41 +3651,51 @@ fn wrap_call_args_always(text: &str, align: bool, only: Option<Range<usize>>) ->
     (out.join("\n"), only)
 }
 
-/// A line split at the arguments of its outermost call with two or more
-/// arguments all on this line; `None` when it has none.
-fn split_call_always(line: &str, align: bool) -> Option<Vec<String>> {
+/// A line split at the items of its outermost Wrap always list with two or
+/// more items all on this line; `None` when it has none.
+fn split_list_always(line: &str, kinds: AlwaysLists) -> Option<Vec<String>> {
     let info = scan(line, false).into_iter().next()?;
     let is_code = |i: usize| info.code.get(i).copied().unwrap_or(false);
     let declaration = declaration_paren(line).and(line.find('(')).filter(|_| !matches!(line.split_whitespace().next(), Some("else" | "do" | "assert")));
     let mut stack: Vec<(usize, char)> = Vec::new();
-    // (depth, open, close) of the outermost call.
-    let mut best: Option<(usize, usize, usize)> = None;
+    // (depth, open, close, align) of the outermost list.
+    let mut best: Option<(usize, usize, usize, bool)> = None;
     for &(at, c) in &info.brackets {
         if matches!(c, '(' | '[' | '{') {
             stack.push((at, c));
             continue;
         }
         let Some((open, opener)) = stack.pop() else { continue };
-        if opener != '(' || c != ')' {
-            continue;
-        }
         let before = &line[..open];
-        let call = is_call_or_declaration(before) && Some(open) != declaration && !annotation_paren(before) && !deconstruction(before) && !record_header(line) && !before.trim_end().ends_with("switch") && !before.trim_end().ends_with("synchronized");
-        if call && list_items(line, open, at, &is_code).len() > 1 && best.is_none_or(|(d, o, _)| stack.len() < d || stack.len() == d && open < o) {
-            best = Some((stack.len(), open, at));
+        let align = match (opener, c) {
+            ('(', ')') if annotation_paren(before) => kinds.annotation,
+            ('(', ')') if deconstruction(before) => kinds.decon,
+            ('(', ')') => {
+                let call = is_call_or_declaration(before) && Some(open) != declaration && !record_header(line) && !before.trim_end().ends_with("switch") && !before.trim_end().ends_with("synchronized");
+                kinds.call.filter(|_| call)
+            }
+            ('{', '}') if is_array_initializer(before) => kinds.array,
+            _ => None,
+        };
+        let Some(align) = align else { continue };
+        if list_items(line, open, at, &is_code).len() > 1 && best.is_none_or(|(d, o, _, _)| stack.len() < d || stack.len() == d && open < o) {
+            best = Some((stack.len(), open, at, align));
         }
     }
-    let (_, open, close) = best?;
+    let (_, open, close, align) = best?;
     let items = list_items(line, open, close, &is_code);
     let lead = &line[..line.len() - line.trim_start().len()];
     let cont = if align { " ".repeat(line[..=open].chars().count()) } else { format!("{lead}        ") };
-    let mut parts = vec![format!("{}{},", &line[..=open], items[0].trim())];
+    // The spaces inside the brackets stay (`{ a, b }`).
+    let inner_lead = &items[0][..items[0].len() - items[0].trim_start().len()];
     let last = items.len() - 1;
+    let inner_trail = &items[last][items[last].trim_end().len()..];
+    let mut parts = vec![format!("{}{inner_lead}{},", &line[..=open], items[0].trim())];
     for (n, item) in items.iter().enumerate().skip(1) {
         if n < last {
             parts.push(format!("{cont}{},", item.trim()));
         } else {
-            parts.push(format!("{cont}{}{}", item.trim(), &line[close..]));
+            parts.push(format!("{cont}{}{inner_trail}{}", item.trim(), &line[close..]));
         }
     }
     Some(parts)
@@ -4274,23 +4302,26 @@ fn chop(line: &str, wr: &Wrapper) -> Option<Vec<String>> {
         }
     };
     let record = !wr.kotlin && record_header(line);
-    let mode = |open: usize, depth: usize| {
+    let list_mode = |open: usize, depth: usize| {
         if line.as_bytes()[open] == b'{' {
             wr.w.array_init
         } else if !wr.kotlin && annotation_paren(&line[..open]) {
             wr.w.annotation_params
         } else if declares(open, depth) && record {
-            // Wrap always split it before; still too long, it chops.
-            if wr.w.record_wrap == Wrap::WrapAlways { Wrap::ChopIfLong } else { wr.w.record_wrap }
+            wr.w.record_wrap
         } else if declares(open, depth) {
-            if wr.w.params == Wrap::WrapAlways { Wrap::ChopIfLong } else { wr.w.params }
+            wr.w.params
         } else if !wr.kotlin && deconstruction(&line[..open]) {
             wr.w.decon_wrap
-        } else if wr.w.call_args == Wrap::WrapAlways {
-            Wrap::ChopIfLong
         } else {
             wr.w.call_args
         }
+    };
+    // Wrap always split the list before (`wrap_lists_always`); still too
+    // long, it chops.
+    let mode = |open: usize, depth: usize| match list_mode(open, depth) {
+        Wrap::WrapAlways => Wrap::ChopIfLong,
+        m => m,
     };
     // (depth, open, close) of the list to chop.
     let mut best: Option<(usize, usize, usize)> = None;
@@ -8424,6 +8455,22 @@ mod tests {
         // Annotations, deconstruction patterns, records and declarations aren't calls.
         let other = "@A(x = 1, y = 2)\nrecord R(int a, int b) {\n    void g(Object o) {\n        if (o instanceof P(int x, int y)) {\n        }\n    }\n}\n";
         assert_eq!(java(w, other), other);
+    }
+
+    #[test]
+    fn wraps_other_lists_always() {
+        let java = |w: Wrapping, text: &str| {
+            let style = IndentStyle { wrapping: Some(w), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let t = "class A {\n    @A(x = 1, y = {2, 3})\n    void f(Object o) {\n        int[] a = { 1, 2 };\n        if (o instanceof P(int x, int y)) {\n            go(1, 2);\n        }\n    }\n}\n";
+        assert_eq!(java(Wrapping::JAVA, t), t);
+        let all = Wrapping { decon_wrap: Wrap::WrapAlways, annotation_params: Wrap::WrapAlways, array_init: Wrap::WrapAlways, ..Wrapping::JAVA };
+        // The deconstruction list puts its parentheses on lines of their own (on by default).
+        assert_eq!(java(all, t), "class A {\n    @A(x = 1,\n            y = {2, 3})\n    void f(Object o) {\n        int[] a = {1,\n                2};\n        if (o instanceof P(\n                int x,\n                int y\n        )) {\n            go(1, 2);\n        }\n    }\n}\n");
+        assert_eq!(java(Wrapping { align_arrays: true, align_annotation_params: true, ..all }, t), "class A {\n    @A(x = 1,\n       y = {2, 3})\n    void f(Object o) {\n        int[] a = {1,\n                   2};\n        if (o instanceof P(\n                int x,\n                int y\n        )) {\n            go(1, 2);\n        }\n    }\n}\n");
     }
 
     #[test]

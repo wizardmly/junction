@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-57
 title: Reformat：Wrapping and Braces 页剩下的选项（第五十七批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-57
-pr:
+pr: 317
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,9 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Deconstruction list、Annotation parameters、Array initializer 的 Wrap always（IntelliJ DECONSTRUCTION_LIST_WRAP / ANNOTATION_PARAMETER_WRAP / ARRAY_INITIALIZER_WRAP = WRAP_ALWAYS）。
+  - #315 的 `wrap_call_args_always` / `split_call_always` 改成 `wrap_lists_always` / `split_list_always`，按 `AlwaysLists { call, decon, annotation, array }`（每项 `Some(align)`）决定哪些列表拆：注解括号、解构模式、调用、数组初始化 `{…}` 各用自己的 Align when multiline。`chop` 的 `mode` 统一把 WrapAlways 当 Chop down if long。
+  - 解构模式默认 New line after '(' / Place ')' on new line 开着，所以拆开后括号也各占一行（同 Chop down 时）。数组拆开后大括号里的空格由空格规则去掉（`{ 1, 2 }` → `{1,` / `2}`）。
+  - 注解里的数组（`@A(x = {1, 2})`）拆开后的那行认不出是数组，不拆。
+  - 测试 `wraps_other_lists_always`；Signal 语料默认 5201 行不变，三项强制打开 5593 行，再加上 Method call arguments 15857 行，第二遍都是 0 行。
+  - 剩下的见 sec33-reformat-rest-58。
