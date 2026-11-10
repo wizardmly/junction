@@ -1451,17 +1451,17 @@ impl SettingsView {
             let picker = Button::new(SharedString::from(format!("settings-ops-wrap-{i}")))
                 .outline()
                 .small()
-                .label(Wrap::LABELS[value.index()])
+                .label(Wrap::LABELS_ALWAYS[value.index()])
                 .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
                 .dropdown_menu(move |mut menu, _, _| {
-                    for (n, name) in Wrap::LABELS.into_iter().enumerate() {
+                    for (n, name) in Wrap::LABELS_ALWAYS.into_iter().enumerate() {
                         let view = view.clone();
                         menu = menu.item(PopupMenuItem::new(name).checked(value.index() == n).on_click(move |_, _, cx| {
                             view.update(cx, |this, cx| {
                                 this.set(
                                     |s| {
                                         let mut w = s.code_style.wrapping(lang);
-                                        let wrap = Wrap::from_index(n).unwrap_or(Wrap::DoNotWrap);
+                                        let wrap = Wrap::from_index_always(n).unwrap_or(Wrap::DoNotWrap);
                                         if i == 0 { w.ops.binary = wrap } else { w.ops.ternary = wrap }
                                         s.code_style.set_wrapping(lang, w)
                                     },

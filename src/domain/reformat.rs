@@ -3701,6 +3701,14 @@ fn split_list_always(line: &str, kinds: AlwaysLists) -> Option<Vec<String>> {
     Some(parts)
 }
 
+/// Java's Binary expressions / Ternary operation set to Wrap always: the
+/// operators whose option is, `None` when neither is.
+fn always_operations(ops: &Operations) -> Option<Operations> {
+    let keep = |w: Wrap| if w == Wrap::WrapAlways { w } else { Wrap::DoNotWrap };
+    let ops = Operations { binary: keep(ops.binary), ternary: keep(ops.ternary), ..*ops };
+    (ops.binary != Wrap::DoNotWrap || ops.ternary != Wrap::DoNotWrap).then_some(ops)
+}
+
 /// Java's 'for()' statement wrap: a header past the margin breaks after its
 /// `;`s (Chop down if long: after each; Wrap if long: where it must), the
 /// parts under the first with Align when multiline; Wrap always: also a
@@ -4222,9 +4230,13 @@ pub const RIGHT_MARGIN: usize = 120;
 fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) -> Vec<String> {
     let mut out = Vec::with_capacity(lines.len());
     let mut todo: Vec<(String, bool)> = lines.into_iter().zip(choppable).rev().collect();
+    // Binary expressions / Ternary operation Wrap always: a line that fits
+    // breaks at its operators too (after the spacing, so `a+b` counts).
+    let always = if wrapper.kotlin { None } else { always_operations(&wrapper.w.ops) };
+    let always_break = |line: &str| always.as_ref().and_then(|ops| scan(line, false).into_iter().next().and_then(|info| operation_break(line, &info, &wrapper.cont, usize::MAX, ops)));
     while let Some((line, choppable)) = todo.pop() {
         // A chop that changes nothing would come back forever.
-        match choppable.then(|| chop(&line, wrapper).filter(|parts| parts.len() > 1).or_else(|| forced_chop(&line, wrapper))).flatten().filter(|parts| parts.len() > 1) {
+        match choppable.then(|| always_break(&line).or_else(|| chop(&line, wrapper)).filter(|parts| parts.len() > 1).or_else(|| forced_chop(&line, wrapper))).flatten().filter(|parts| parts.len() > 1) {
             Some(parts) => todo.extend(parts.into_iter().rev().map(|p| (p, true))),
             None => out.push(line),
         }
@@ -5435,7 +5447,7 @@ fn operation_break(line: &str, info: &Line, unit: &str, margin: usize, ops: &Ope
     let mut current = pieces[0].clone();
     for piece in &pieces[1..] {
         let joined = format!("{current} {piece}");
-        if mode == Wrap::ChopIfLong || width(&joined) > margin {
+        if matches!(mode, Wrap::ChopIfLong | Wrap::WrapAlways) || width(&joined) > margin {
             parts.push(current);
             current = format!("{prefix}{piece}");
         } else {
@@ -7784,6 +7796,21 @@ mod tests {
             "class A {\n    void f(int a) {\n        if (a > 0)\n            return;\n        else if (a < 0)\n            // negative\n            a++;\n        else\n            for (int i = 0; i < a; i++)\n                if (i > 1)\n                    g(i,\n                            1);\n        while (a > 9)\n            a /= 2;\n        do\n            a--;\n        while (a > 0);\n        if (a == 1) {\n            a = 2;\n        }\n        h(\")\");\n        if (a > 1 &&\n                a < 9)\n            a = 0;\n        while (f(a,\n                b) > 0) {\n            a--;\n        }\n        g();\n    }\n}"
         );
         assert_eq!(kt("fun f(x: Int) {\nif (x > 0)\nprintln(x)\nelse\nreturn\nfor (i in 0..x)\ng(i)\nval y = if (x > 1) 2 else 3\ndo {\ng(x)\n} while (x > 9)\nh()\nreturn if (x > 2)\nx\nelse\n0\n}"), "fun f(x: Int) {\n    if (x > 0)\n        println(x)\n    else\n        return\n    for (i in 0..x)\n        g(i)\n    val y = if (x > 1) 2 else 3\n    do {\n        g(x)\n    } while (x > 9)\n    h()\n    return if (x > 2)\n        x\n    else\n        0\n}");
+    }
+
+    #[test]
+    fn wraps_binary_and_ternary_expressions_always() {
+        let w = |ops: Operations, text: &str| {
+            let style = IndentStyle { wrapping: Some(Wrapping { ops, ..Wrapping::JAVA }), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let text = "class A {\n    int f() {\n        int total = a + b * c;\n        String s = ok ? \"yes\" : \"no\";\n        return a;\n    }\n}";
+        // Lines that fit break too, at every operator (the ones inside an operand as well).
+        assert_eq!(w(Operations { binary: Wrap::WrapAlways, ..Operations::NONE }, text), "class A {\n    int f() {\n        int total = a +\n                b *\n                c;\n        String s = ok ? \"yes\" : \"no\";\n        return a;\n    }\n}");
+        assert_eq!(w(Operations { ternary: Wrap::WrapAlways, ternary_signs_next: true, ..Operations::NONE }, text), "class A {\n    int f() {\n        int total = a + b * c;\n        String s = ok\n                ? \"yes\"\n                : \"no\";\n        return a;\n    }\n}");
+        assert_eq!(w(Operations { binary: Wrap::WrapAlways, binary_sign_next: true, ternary: Wrap::WrapAlways, ..Operations::NONE }, text), "class A {\n    int f() {\n        int total = a\n                + b\n                * c;\n        String s = ok ?\n                \"yes\" :\n                \"no\";\n        return a;\n    }\n}");
     }
 
     #[test]
