@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-66
 title: Reformat：Wrapping and Braces 页剩下的选项（第六十六批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-66
-pr:
+pr: 334
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：`Wrapping::javadoc_layout` 从 `[bool; 3]` 扩到 `[bool; 5]`，加 Blank lines: After parameter descriptions（JD_ADD_BLANK_AFTER_PARM_COMMENTS）和 After return tag（JD_ADD_BLANK_AFTER_RETURN），Java 默认都关，settings.conf 第 121–122 位（旧配置缺位用默认值）。`javadoc_layout` 在对齐之后找最后一个 `@param` 块的结尾和每个 `@return` 块的结尾（到下一个标签或空行），后面紧跟标签时插一行 ` *`；后面是 `*/` 或空行就不加，和 IntelliJ 删掉结尾空行的结果一样。没做标签重排，所以 `@return` 写在 `@param` 前面时空行按写的顺序加。测试 `lays_out_javadoc_tags` 加了这两项。Signal 语料：默认 5274 行不变，两项打开 5311 行、第二遍 0 行。剩下的（标签重排、按右边距重排、Kotlin 裸赋值 Wrap always）放到 sec33-reformat-rest-67。
