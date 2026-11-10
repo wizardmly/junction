@@ -4582,7 +4582,7 @@ fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) 
     // Elvis expressions and Chained function calls Wrap always: the same.
     let kotlin_always = wrapper.kotlin && (kotlin_lists || [w.extends, w.assignment, w.elvis, w.chain].contains(&Wrap::WrapAlways));
     let kc = |i: usize| if w.kotlin_cont[i] { wrapper.cont.as_str() } else { wrapper.unit };
-    let always_break = |line: &str| -> Option<Vec<String>> {
+    let always_break = |line: &str, prev: Option<&str>| -> Option<Vec<String>> {
         if wrapper.kotlin {
             if !kotlin_always {
                 return None;
@@ -4593,7 +4593,7 @@ fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) 
                 .then(|| supertype_break(line, &info, kc(4), usize::MAX, true))
                 .flatten()
                 // Not a line that already starts with the value.
-                .or_else(|| on(w.assignment).then(|| assignment_break(line, &info, kc(2), usize::MAX, false)).flatten().filter(|parts| always_assigns(&parts[0], line, true)))
+                .or_else(|| on(w.assignment).then(|| assignment_break(line, &info, kc(2), usize::MAX, false)).flatten().filter(|parts| always_assigns(&parts[0], line, true) && kotlin_statement(prev)))
                 .or_else(|| on(w.elvis).then(|| elvis_break(line, &info, kc(6), usize::MAX, Wrap::ChopIfLong)).flatten())
                 .or_else(|| on(w.chain).then(|| chain_break(line, &info, kc(3), usize::MAX, w.wrap_first_call)).flatten())
                 .or_else(|| kotlin_lists.then(|| chop(line, &lists_wrapper).filter(|parts| parts.len() > 1)).flatten());
@@ -4613,7 +4613,7 @@ fn chop_long_lines(lines: Vec<String>, choppable: Vec<bool>, wrapper: &Wrapper) 
     };
     while let Some((line, choppable)) = todo.pop() {
         // A chop that changes nothing would come back forever.
-        match choppable.then(|| always_break(&line).or_else(|| chop(&line, wrapper)).filter(|parts| parts.len() > 1).or_else(|| forced_chop(&line, wrapper))).flatten().filter(|parts| parts.len() > 1) {
+        match choppable.then(|| always_break(&line, out.last().map(String::as_str)).or_else(|| chop(&line, wrapper)).filter(|parts| parts.len() > 1).or_else(|| forced_chop(&line, wrapper))).flatten().filter(|parts| parts.len() > 1) {
             Some(parts) => todo.extend(parts.into_iter().rev().map(|p| (p, true))),
             None => out.push(line),
         }
@@ -5657,11 +5657,19 @@ fn always_assigns(head: &str, line: &str, kotlin: bool) -> bool {
     }
     let bare = target.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$');
     if kotlin {
-        let words: Vec<&str> = target.split_whitespace().collect();
-        !bare || words.iter().any(|w| matches!(*w, "val" | "var" | "fun")) || target.starts_with("get(") || target.starts_with("set(")
+        // Any `=` (IntelliJ wraps a KtProperty's, a function's expression
+        // body and an `x = y` binary expression), not `+=` and the like.
+        !target.ends_with(['+', '-', '*', '/', '%'])
     } else {
         !bare || line.trim_end().ends_with(';')
     }
+}
+
+/// Whether a Kotlin line after `prev` is a statement, not an argument or a
+/// parameter in a chopped list (a named argument's or a default value's
+/// `=` isn't an assignment).
+fn kotlin_statement(prev: Option<&str>) -> bool {
+    !prev.map(str::trim_end).is_some_and(|p| p.ends_with('(') || p.ends_with(','))
 }
 
 /// ASSIGNMENT_WRAP and WRAP_EXPRESSION_BODY_FUNCTIONS "wrap if long": the
@@ -8224,6 +8232,9 @@ mod tests {
         assert_eq!(w(Wrapping { extends: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "class A : B(),\n    C {\n    fun f(s: String?): Int {\n        val n = s?.length ?: 0\n        return list.map(it).filter(ok).size\n    }\n}");
         // … after `=` …
         assert_eq!(w(Wrapping { assignment: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "class A : B(), C {\n    fun f(s: String?): Int {\n        val n =\n            s?.length ?: 0\n        return list.map(it).filter(ok).size\n    }\n}");
+        // … a plain `x = y` too, not `+=`, a named argument or a default value.
+        let plain = "fun f(\n    a: Int = 1,\n    b: Int = 2,\n) {\n    total = a\n    total += b\n    g(\n        name = \"x\",\n        size = 2\n    )\n}";
+        assert_eq!(w(Wrapping { assignment: Wrap::WrapAlways, ..Wrapping::KOTLIN }, plain), "fun f(\n    a: Int = 1,\n    b: Int = 2,\n) {\n    total =\n        a\n    total += b\n    g(\n        name = \"x\",\n        size = 2\n    )\n}");
         // … before `?:` …
         assert_eq!(w(Wrapping { elvis: Wrap::WrapAlways, ..Wrapping::KOTLIN }, text), "class A : B(), C {\n    fun f(s: String?): Int {\n        val n = s?.length\n            ?: 0\n        return list.map(it).filter(ok).size\n    }\n}");
         // … before each call whose receiver is a call (the first only with Wrap first call).
