@@ -638,9 +638,22 @@ impl DebugSession {
         }
         let mut state = self.state.lock().unwrap();
         let classes = self.vm.all_classes()?;
-        for placed in state.breakpoints.iter_mut().filter(|p| p.breakpoint.field.is_none() && (sources.contains(&p.breakpoint.source_name) || p.breakpoint.implementations.iter().any(|i| sources.contains(&i.source_name)) || p.breakpoint.wildcard.is_some())) {
+        // A field watchpoint stays (field ids outlive a redefinition), but
+        // one on a Kotlin property's accessors is set on the old methods.
+        let accessors = self.accessors.lock().unwrap().clone();
+        let replaced = |p: &Placed| {
+            if p.breakpoint.field.is_some() {
+                return sources.contains(&p.breakpoint.source_name) && p.requests.iter().any(|r| accessors.contains(r));
+            }
+            sources.contains(&p.breakpoint.source_name) || p.breakpoint.implementations.iter().any(|i| sources.contains(&i.source_name)) || p.breakpoint.wildcard.is_some()
+        };
+        for placed in state.breakpoints.iter_mut().filter(|p| replaced(p)) {
             for request in placed.requests.drain(..) {
-                let _ = self.clear_request(request);
+                if self.accessors.lock().unwrap().remove(&request) {
+                    let _ = self.vm.clear_breakpoint(request);
+                } else {
+                    let _ = self.clear_request(request);
+                }
             }
             for class in classes.iter().filter(|c| placed.breakpoint.in_packages(&c.name)) {
                 placed.requests.extend(self.place(class.id, &placed.breakpoint)?);
@@ -1364,6 +1377,13 @@ mod tests {
         watch.field = Some(FieldWatch { name: "size".into(), access: true, modification: true });
         session.add_breakpoint(watch).unwrap();
         assert_eq!(vm.take_log().iter().filter(|l| l.starts_with("break")).collect::<Vec<_>>(), ["break 20:5:0", "break 20:6:2"]);
+        // HotSwap of Box.kt: the accessor breakpoints move to the new methods.
+        let changed = [("a.Box".to_owned(), PathBuf::from("/out/a/Box.class"))];
+        assert_eq!(session.hot_swap(&changed, &Files, None), HotSwapOutcome::Reloaded(1));
+        let log = vm.take_log();
+        let cleared: Vec<_> = log.iter().filter(|l| l.starts_with("clear")).collect();
+        assert_eq!(cleared.len(), 2, "{log:?}");
+        assert_eq!(log.iter().filter(|l| l.starts_with("break")).collect::<Vec<_>>(), ["break 20:5:0", "break 20:6:2"], "{log:?}");
         let mut java = LineBreakpoint::new(Path::new("/p/src/main/java/a/Box.java"), "a".into(), 3);
         java.field = Some(FieldWatch { name: "size".into(), access: true, modification: true });
         assert_eq!(session.add_breakpoint(java), Ok(false));
