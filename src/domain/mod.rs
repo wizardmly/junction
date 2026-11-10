@@ -79,6 +79,7 @@ pub mod todo;
 pub mod sync;
 pub mod vector_drawable;
 pub mod drawable;
+pub mod nine_patch;
 pub mod change_signature;
 pub mod class_stub;
 pub mod kotlin_metadata;
