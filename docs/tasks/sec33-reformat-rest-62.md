@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-62
 title: Reformat：Wrapping and Braces 页剩下的选项（第六十二批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-62
-pr:
+pr: 325
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Java 的 JavaDoc › Enable leading asterisks。`Wrapping::javadoc_asterisks`（Java 默认开，Kotlin 关），settings.conf 第 117 位（下标 116，旧配置缺这位时用语言默认值）。reformat 的逐行循环里记 `javadoc: Option<(String, Option<usize>)>`：碰到不在同一行结束的 `/**` 时记下它输出的缩进，`*/` 结束时清掉；块注释里不以 `*` 开头的行输出成 `{缩进} * {多出的空格}{文字}`，多出的空格 = 这一行原来的缩进 − 这个 Javadoc 里第一行无星号文字的原缩进（保住 `<pre>` 代码的相对缩进）；Javadoc 里的空行输出 `{缩进} *`。设置页勾选项（flags 数组 62 项）加“JavaDoc: Enable leading asterisks”。测试 `adds_javadoc_leading_asterisks`，`round_trips_settings_lines` 的期望串各加一位。语料：默认 5201 行不变（Signal 的 Javadoc 都有星号）。没做：JavaDoc 页别的格式化（参数描述对齐、@param 前空行、Enable JavaDoc formatting 总开关）、Kotlin KDoc。剩下的在 sec33-reformat-rest-63。
