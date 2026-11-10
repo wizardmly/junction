@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-50
 title: Reformat：Wrapping and Braces 页剩下的选项（第五十批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-50
+pr: 310
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Java 的 Annotation parameters 的 Align when multiline、New line after '(' 和 Place ')' on new line（`Wrapping::align_annotation_params` / `annotation_parens`，settings.conf 第 111–113 位，默认关，设置页 Java 的三个复选框）。对齐在 `apply_brackets` 第 8 个开关：`annotation_paren` 的 `(` 后面同一行还有内容、且第一个参数后还有顶层逗号（`top_level_comma`）时，后续行对齐到第一个参数。括号换行在 `list_parens`（`array` 参数改成 `[array, annotation]`）：注解的 `(…)` 跨行时在 `(` 后和 `)` 前断开。测试 `lays_out_annotation_parameter_lists`。Signal 语料没有跨行的注解参数（默认和打开都是 5201 行、0 行不稳定）。剩下的放到 sec33-reformat-rest-51：Enum field annotations（ENUM_FIELD_ANNOTATION_WRAP）、Method parentheses › New line when body is presented、Record components › Annotations new line、Use flying geese braces、Javadoc 无星号行补 ` * `。

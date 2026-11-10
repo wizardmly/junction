@@ -1841,7 +1841,10 @@ impl SettingsView {
                         .child(self.row("Chained method calls: Builder methods:", query, div().w(px(320.)).child(Input::new(&self.builders).small()), cx))
                         .child(self.note("Method names separated by ','; these calls always start a line in a chain", cx));
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 56] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 59] = [
+                        ("Annotation parameters: Align when multiline", w.align_annotation_params, |w, v| w.align_annotation_params = v),
+                        ("Annotation parameters: New line after '('", w.annotation_parens[0], |w, v| w.annotation_parens[0] = v),
+                        ("Annotation parameters: Place ')' on new line", w.annotation_parens[1], |w, v| w.annotation_parens[1] = v),
                         ("Method call arguments: Take priority over call chain wrapping", w.prefer_params, |w, v| w.prefer_params = v),
                         ("Parenthesized expression: Align when multiline", w.align_parens, |w, v| w.align_parens = v),
                         ("Ensure right margin is not exceeded", w.ensure_margin, |w, v| w.ensure_margin = v),
