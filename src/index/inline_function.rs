@@ -210,6 +210,7 @@ fn block_plan(lang: Lang, function: Node, text: &str, word: &str) -> Result<Para
         this_refs: Vec::new(),
         ty: String::new(),
         taken: Vec::new(),
+        delegate: None,
         block: Some(Block { return_start, result, indent, locals, assigned, types: params.iter().map(|p| p.ty.clone()).collect(), java: lang == Lang::Java, private_members: uses_private }),
     })
 }

@@ -220,6 +220,7 @@ mod tests {
             ty: String::new(),
             taken: Vec::new(),
             block: None,
+            delegate: None,
             expression,
         }
     }
