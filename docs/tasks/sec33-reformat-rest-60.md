@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-60
 title: Reformat：Wrapping and Braces 页剩下的选项（第六十批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-60
-pr:
+pr: 322
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Java 的 Binary expressions / Ternary operation 加 Wrap always。`chop_long_lines` 里先试 `always_operations(&ops)` 挑出的运算符，用 `operation_break`（margin 取 `usize::MAX`，Wrap always 和 Chop down 一样每个运算符都断），产生的行再拆一遍，所以子表达式里的运算符也断。一开始放在 reformat 开头的预处理里，Signal 语料第二遍有 33 行变化：原文 `a+b` 没空格，要等空格整理后才认得出运算符，所以挪到了 chop 阶段。设置页这两个下拉框用 `Wrap::LABELS_ALWAYS` / `from_index_always`，settings.conf 不用改（第 16、18 位本来就用 `wrap_at` 读）。测试 `wraps_binary_and_ternary_expressions_always`。语料：默认 5201 行不变，两个都打开时 8824 行、第二遍 0 行。剩下的 Assignment / Extends keyword / 'assert' 等的 Wrap always 在 sec33-reformat-rest-61。
