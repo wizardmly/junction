@@ -132,8 +132,46 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<(Paramete
         ty,
         taken: decls.iter().map(|d| d.name.clone()).collect(),
         block: None,
+        delegate: (lang == Lang::Java).then(|| delegate_site(function, text)).flatten(),
     };
     Ok((plan, super::introduce::name_source(lang, node, text)))
+}
+
+/// Where an overload delegating to a Java method goes, and what it copies.
+fn delegate_site(function: Node, text: &str) -> Option<crate::domain::introduce_parameter::DelegateSite> {
+    let body = function.child_by_field_name("body")?;
+    let start = function.start_byte();
+    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+    let indent: String = text[line_start..start].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    // One step: the body's first line's indent past the declaration's.
+    let unit = text[body.start_byte()..body.end_byte()]
+        .lines()
+        .skip(1)
+        .find(|l| !l.trim().is_empty() && l.starts_with(indent.as_str()))
+        .map(|l| l[indent.len()..].chars().take_while(|c| *c == ' ' || *c == '\t').collect::<String>())
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| "    ".into());
+    let constructor = function.kind() == "constructor_declaration";
+    let returns = !constructor && function.child_by_field_name("type").is_some_and(|t| t.kind() != "void_type");
+    let overrides = children(function)
+        .into_iter()
+        .filter(|c| c.kind() == "modifiers")
+        .flat_map(children)
+        .filter(|a| matches!(a.kind(), "marker_annotation" | "annotation") && matches!(a.child_by_field_name("name").map(|n| &text[n.byte_range()]), Some("Override" | "java.lang.Override")))
+        .map(|a| {
+            let end = a.end_byte() + text[a.end_byte()..].len() - text[a.end_byte()..].trim_start().len();
+            a.start_byte()..end
+        })
+        .collect();
+    Some(crate::domain::introduce_parameter::DelegateSite {
+        start,
+        header: text[start..body.start_byte()].trim_end().to_owned(),
+        indent,
+        unit,
+        returns,
+        constructor,
+        overrides,
+    })
 }
 
 /// Keeps only the calls of the function whose name is on `line` of the
@@ -409,6 +447,20 @@ mod tests {
         assert_eq!((plan.params.clone(), plan.uses.clone()), (vec!["price".to_owned()], vec![(0..5, 0)]));
         let calls = call_sites(Lang::Java, text, "total", 1);
         assert_eq!(calls.iter().map(|c| c.receiver.clone()).collect::<Vec<_>>(), [None, Some("other".to_owned())]);
+    }
+
+    #[test]
+    fn finds_where_a_java_delegate_goes() {
+        let text = "class A {\n\t@Override\n\tpublic void run(int n) {\n\t\tlog(n + 1);\n\t}\n\tA(int x) { this.x = x * 2; }\n}\n";
+        let at = text.find("n + 1").unwrap();
+        let site = plan(Lang::Java, text, at..at + 5).unwrap().0.delegate.unwrap();
+        assert_eq!((site.header.as_str(), site.indent.as_str(), site.unit.as_str(), site.returns, site.constructor), ("@Override\n\tpublic void run(int n)", "\t", "\t", false, false));
+        assert_eq!(&text[site.overrides[0].clone()], "@Override\n\t");
+        let at = text.find("x * 2").unwrap();
+        let site = plan(Lang::Java, text, at..at + 5).unwrap().0.delegate.unwrap();
+        assert_eq!((site.header.as_str(), site.unit.as_str(), site.returns, site.constructor), ("A(int x)", "    ", false, true));
+        let text = "fun f(n: Int) = n + 1\n";
+        assert!(plan(Lang::Kotlin, text, 16..21).unwrap().0.delegate.is_none());
     }
 
     #[test]

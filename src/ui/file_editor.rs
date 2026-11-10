@@ -1640,8 +1640,8 @@ impl FileEditor {
                             let caret = changes.iter().filter(|(r, _)| r.start < at).fold(at as isize, |c, (r, s)| c + s.len() as isize - r.len() as isize) as usize;
                             let new = apply(&text, changes);
                             this.replace_text(&text, &new, caret, window, cx);
-                            // The other files' calls, unless the value is a default.
-                            let written = match (&files, request.default_value && style == crate::domain::imports::ImportStyle::Kotlin) {
+                            // The other files' calls, unless the value is a default or an overload delegates.
+                            let written = match (&files, request.keeps_calls()) {
                                 (Some(files), false) => update_calls::rewrite(files, &elsewhere, &|f| f.calls.iter().filter_map(|c| call_edit(&plan, c, &request.name)).collect()),
                                 _ => Vec::new(),
                             };

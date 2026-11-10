@@ -1,6 +1,8 @@
 //! IntelliJ's Introduce Parameter dialog: the name (its suggestions in a
 //! dropdown), the type, "Replace all N occurrences" and, in Kotlin,
-//! "Introduce default value" (the calls then left alone).
+//! "Introduce default value" (the calls then left alone); in Java,
+//! "Declare final" and "Delegate via overloading method", remembered as
+//! IntelliJ's `JavaRefactoringSettings` does.
 
 use std::rc::Rc;
 
@@ -20,6 +22,11 @@ use crate::theme::ActivePalette as _;
 use crate::ui::as_icons as icons;
 use crate::ui::dialogs;
 
+thread_local! {
+    /// Java's "Declare final" and "Delegate via overloading method", as last chosen.
+    static LAST_JAVA: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+}
+
 pub struct IntroduceParameterView {
     style: ImportStyle,
     plan: ParameterPlan,
@@ -30,6 +37,8 @@ pub struct IntroduceParameterView {
     ty: Entity<InputState>,
     replace_all: bool,
     default_value: bool,
+    declare_final: bool,
+    delegate: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -40,6 +49,8 @@ impl IntroduceParameterView {
             ty: self.ty.read(cx).value().trim().to_owned(),
             replace_all: self.replace_all,
             default_value: self.default_value && self.style == ImportStyle::Kotlin,
+            declare_final: self.declare_final && self.style == ImportStyle::Java,
+            delegate: self.delegate && self.style == ImportStyle::Java && self.plan.delegate.is_some(),
         }
     }
 
@@ -70,7 +81,9 @@ impl Render for IntroduceParameterView {
         });
         let occurrences = self.plan.occurrences.len();
         let kotlin = self.style == ImportStyle::Kotlin;
-        let calls = if request.default_value { 0 } else { self.calls };
+        let java = self.style == ImportStyle::Java;
+        let can_delegate = java && self.plan.delegate.is_some();
+        let calls = if request.keeps_calls() { 0 } else { self.calls };
         v_flex()
             .gap_2()
             .child(h_flex().gap_2().child(label("Name:")).child(div().flex_1().child(Input::new(&self.name))).when(self.suggestions.len() > 1, |el| el.child(names)))
@@ -84,6 +97,18 @@ impl Render for IntroduceParameterView {
             .when(kotlin, |el| {
                 el.child(Checkbox::new("parameter-default").label("Introduce default value").checked(self.default_value).on_click(cx.listener(|this, checked: &bool, _, cx| {
                     this.default_value = *checked;
+                    cx.notify();
+                })))
+            })
+            .when(java, |el| {
+                el.child(Checkbox::new("parameter-final").label("Declare final").checked(self.declare_final).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                    this.declare_final = *checked;
+                    cx.notify();
+                })))
+            })
+            .when(can_delegate, |el| {
+                el.child(Checkbox::new("parameter-delegate").label("Delegate via overloading method").checked(self.delegate).on_click(cx.listener(|this, checked: &bool, _, cx| {
+                    this.delegate = *checked;
                     cx.notify();
                 })))
             })
@@ -119,7 +144,8 @@ pub fn open(
                 }
             }));
         }
-        IntroduceParameterView { style, plan, calls, suggestions, name, ty, replace_all: true, default_value: false, _subscriptions }
+        let (declare_final, delegate) = LAST_JAVA.with(|l| l.get());
+        IntroduceParameterView { style, plan, calls, suggestions, name, ty, replace_all: true, default_value: false, declare_final, delegate, _subscriptions }
     });
     let focus = view.read(cx).name.clone();
     let on_ok = Rc::new(on_ok);
@@ -127,6 +153,10 @@ pub fn open(
         let (view_ok, on_ok) = (view.clone(), on_ok.clone());
         dialog.title("Introduce Parameter").w(px(480.)).child(view.clone()).footer(dialogs::footer("Refactor")).on_ok(move |_, window, cx| {
             let Ok(request) = view_ok.read(cx).valid(cx) else { return false };
+            if style == ImportStyle::Java {
+                let view = view_ok.read(cx);
+                LAST_JAVA.with(|l| l.set((view.declare_final, view.delegate)));
+            }
             on_ok(request, window, cx);
             true
         })
