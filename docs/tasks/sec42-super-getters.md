@@ -5,7 +5,7 @@ features: 第 42 节
 status: done
 owner: Claude（项目线程）/ 替 Megan 干活
 branch: task/sec42-super-getters
-pr: https://github.com/wizardmly/junction/pull/PRNUM
+pr: https://github.com/wizardmly/junction/pull/333
 claimed: 2026-11-10
 files: src/index/introduce_parameter.rs, src/ui/file_editor.rs
 ---
