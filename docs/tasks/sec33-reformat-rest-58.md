@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-58
 title: Reformat：Wrapping and Braces 页剩下的选项（第五十八批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-58
-pr:
+pr: 318
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,8 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：'for()' statement、'try-with-resources'、Multi-catch types 的 Wrap always（IntelliJ FOR_STATEMENT_WRAP / RESOURCE_LIST_WRAP / MULTI_CATCH_TYPES_WRAP = WRAP_ALWAYS）。
+  - `wrap_for_statements` 在 WrapAlways 时不看右边界，按 Chop down 拆：for 头每个 `;` 后、资源每个 `;` 后、multi-catch 每个 `|` 后另起一行（各自的 Align when multiline）；`;` / `|` 后面没东西的点（已经拆过的头）不算，所以第二遍不变。foreach 没有 `;` 不动。
+  - 设置读 Multi-catch 第 98 位改用 `from_index_always`；三个下拉框加 Wrap always。
+  - 测试 `wraps_statement_headers_always`；Signal 语料默认 5201 行不变，三项强制打开 5351 行，第二遍 0 行。
+  - 剩下的见 sec33-reformat-rest-59。
