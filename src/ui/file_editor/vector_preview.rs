@@ -53,13 +53,14 @@ pub(super) fn resource_lookups(
     table: Option<std::sync::Arc<std::sync::RwLock<crate::usecase::android_resources::ResourceTable>>>,
     root: std::path::PathBuf,
     file: &str,
-) -> (impl Fn(&str) -> Option<u32>, impl Fn(&str) -> Option<String>, impl Fn(&str) -> Option<String>) {
+) -> (impl Fn(&str) -> Option<u32>, impl Fn(&str) -> Option<String>, impl Fn(&str) -> Option<String>, impl Fn(&str) -> Option<drawable::Bitmap>) {
     let reference = |value: &str| -> Option<ResourceRef> {
         let (kind, name) = value.strip_prefix('@')?.split_once('/')?;
         Some(ResourceRef::new(kind, name))
     };
     let theme = Rc::new(Theme::new(table.clone(), root.clone(), file));
-    let (t1, t2, t3) = (table.clone(), table.clone(), table);
+    let (t1, t2, t3, t4) = (table.clone(), table.clone(), table.clone(), table);
+    let root4 = root.clone();
     let (th1, th2) = (theme.clone(), theme);
     (
         move |value: &str| {
@@ -81,6 +82,7 @@ pub(super) fn resource_lookups(
             let path = t3.as_ref()?.read().ok()?.drawable_xml(&reference(value)?)?.path.to_string();
             std::fs::read_to_string(root.join(path)).ok()
         },
+        move |value: &str| t4.as_ref()?.read().ok()?.load_bitmap(&root4, &reference(value)?),
     )
 }
 
@@ -158,7 +160,7 @@ impl FileEditor {
             let table = index.as_ref().map(|i| i.resources.clone());
             let root = index.and_then(|i| i.root().map(|r| r.to_path_buf())).unwrap_or_default();
             let lookups = resource_lookups(table, root, &self.path);
-            let lookup = Lookup { color: &lookups.0, value: &lookups.1, drawable: &lookups.2 };
+            let lookup = Lookup { color: &lookups.0, value: &lookups.1, drawable: &lookups.2, bitmap: &lookups.3 };
             // Measure first, then draw at the zoom (or the preview's size).
             let zoom = self.vector_zoom;
             let result = drawable::render(&text, 1., &lookup).and_then(|first| {

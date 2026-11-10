@@ -62,7 +62,11 @@ impl FileEditor {
                         let path = table.drawable_xml(&crate::domain::android_resources::ResourceRef::new(kind, name))?.path.to_string();
                         std::fs::read_to_string(root.join(path)).ok()
                     };
-                    let lookup = drawable::Lookup { color: &color, value: &value, drawable: &load };
+                    let bitmap = |value: &str| -> Option<drawable::Bitmap> {
+                        let (kind, name) = value.strip_prefix('@')?.split_once('/')?;
+                        table.load_bitmap(&root, &crate::domain::android_resources::ResourceRef::new(kind, name))
+                    };
+                    let lookup = drawable::Lookup { color: &color, value: &value, drawable: &load, bitmap: &bitmap };
                     let mut vectors = std::collections::HashMap::new();
                     for (_, p) in &marks {
                         let Preview::Vector(file) = p else { continue };
