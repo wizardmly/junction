@@ -1368,10 +1368,10 @@ impl SettingsView {
     /// Class / Method / Field / Local variable annotations; Java's Enum
     /// constants and Parameter annotations too.
     fn annotation_options(&self, mut page: gpui_kit::Div, query: &str, lang: StyleLang, w: Wrapping, cx: &mut Context<Self>) -> gpui_kit::Div {
-        // Three annotations, Enum constants (index 3, Java's), Local variable (4) and Parameter (5) annotations.
-        let wraps = [w.annotations[0], w.annotations[1], w.annotations[2], w.enum_constants, w.local_annotations, w.param_annotations];
-        for (i, label) in ["Class annotations:", "Method annotations:", "Field annotations:", "Enum constants:", "Local variable annotations:", "Parameter annotations:"].into_iter().enumerate() {
-            if lang != StyleLang::Java && i == 3 {
+        // Three annotations, Enum constants (index 3, Java's), Local variable (4), Parameter (5) and Enum field (6, Java's) annotations.
+        let wraps = [w.annotations[0], w.annotations[1], w.annotations[2], w.enum_constants, w.local_annotations, w.param_annotations, w.enum_annotations];
+        for (i, label) in ["Class annotations:", "Method annotations:", "Field annotations:", "Enum constants:", "Local variable annotations:", "Parameter annotations:", "Enum field annotations:"].into_iter().enumerate() {
+            if lang != StyleLang::Java && (i == 3 || i == 6) {
                 continue;
             }
             let view = cx.entity();
@@ -1393,6 +1393,7 @@ impl SettingsView {
                                             3 => w.enum_constants = wrap,
                                             4 => w.local_annotations = wrap,
                                             5 => w.param_annotations = wrap,
+                                            6 => w.enum_annotations = wrap,
                                             _ => w.annotations[i] = wrap,
                                         }
                                         s.code_style.set_wrapping(lang, w)
@@ -1413,20 +1414,22 @@ impl SettingsView {
     /// expressions, Java's Array initializer, Throws list and the like.
     fn wrap_option(&self, page: gpui_kit::Div, query: &str, label: &'static str, lang: StyleLang, value: Wrap, apply: fn(&mut Wrapping, Wrap), cx: &mut Context<Self>) -> gpui_kit::Div {
         let view = cx.entity();
+        // These offer Wrap always too (IntelliJ's WRAP_VALUES).
+        let labels: &'static [&'static str] = if matches!(label, "Record components:" | "Throws list:" | "Throws keyword:") { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
         let picker = Button::new(SharedString::from(format!("settings-wrap-{label}")))
             .outline()
             .small()
-            .label(Wrap::LABELS[value.index()])
+            .label(labels[value.index().min(labels.len() - 1)])
             .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
             .dropdown_menu(move |mut menu, _, _| {
-                for (n, name) in Wrap::LABELS.into_iter().enumerate() {
+                for (n, name) in labels.iter().copied().enumerate() {
                     let view = view.clone();
                     menu = menu.item(PopupMenuItem::new(name).checked(value.index() == n).on_click(move |_, _, cx| {
                         view.update(cx, |this, cx| {
                             this.set(
                                 |s| {
                                     let mut w = s.code_style.wrapping(lang);
-                                    apply(&mut w, Wrap::from_index(n).unwrap_or(Wrap::DoNotWrap));
+                                    apply(&mut w, Wrap::from_index_always(n).unwrap_or(Wrap::DoNotWrap));
                                     s.code_style.set_wrapping(lang, w)
                                 },
                                 cx,
@@ -1747,13 +1750,15 @@ impl SettingsView {
                         continue;
                     }
                     let view = cx.entity();
+                    // Java's arguments and parameters offer Wrap always too.
+                    let names: &'static [&'static str] = if lang == StyleLang::Java && i <= 1 { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
                     let picker = Button::new(SharedString::from(format!("settings-wrap-{}-{i}", lang.name())))
                         .outline()
                         .small()
-                        .label(Wrap::LABELS[values[i].index()])
+                        .label(names[values[i].index().min(names.len() - 1)])
                         .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
                         .dropdown_menu(move |mut menu, _, _| {
-                            for (n, name) in Wrap::LABELS.into_iter().enumerate() {
+                            for (n, name) in names.iter().copied().enumerate() {
                                 let view = view.clone();
                                 menu = menu.item(PopupMenuItem::new(name).checked(values[i].index() == n).on_click(move |_, _, cx| {
                                     view.update(cx, |this, cx| {
@@ -1761,7 +1766,7 @@ impl SettingsView {
                                             |s| {
                                                 let w = s.code_style.wrapping(lang);
                                                 let mut v = w.values();
-                                                v[i] = Wrap::from_index(n).unwrap_or(Wrap::DoNotWrap);
+                                                v[i] = Wrap::from_index_always(n).unwrap_or(Wrap::DoNotWrap);
                                                 // The other options stay.
                                                 s.code_style.set_wrapping(lang, w.with_values(v))
                                             },
@@ -1835,11 +1840,22 @@ impl SettingsView {
                     page = self.wrap_option(page, query, "Record components:", lang, d.wrapping(lang).record_wrap, |w, v| w.record_wrap = v, cx);
                     page = self.wrap_option(page, query, "Deconstruction list:", lang, d.wrapping(lang).decon_wrap, |w, v| w.decon_wrap = v, cx);
                     page = self.wrap_option(page, query, "Multi-catch types:", lang, d.wrapping(lang).catch_wrap, |w, v| w.catch_wrap = v, cx);
+                    page = self.wrap_option(page, query, "Switch expressions:", lang, d.wrapping(lang).switch_wrap, |w, v| w.switch_wrap = v, cx);
+                    page = self.wrap_option(page, query, "Extends keyword:", lang, d.wrapping(lang).extends_keyword, |w, v| w.extends_keyword = v, cx);
                     page = page
                         .child(self.row("Chained method calls: Builder methods:", query, div().w(px(320.)).child(Input::new(&self.builders).small()), cx))
                         .child(self.note("Method names separated by ','; these calls always start a line in a chain", cx));
                     let w = d.wrapping(lang);
-                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 51] = [
+                    let flags: [(&'static str, bool, fn(&mut Wrapping, bool)); 61] = [
+                        ("Method parentheses: New line when body is presented", w.body_new_line, |w, v| w.body_new_line = v),
+                        ("Annotation parameters: Align when multiline", w.align_annotation_params, |w, v| w.align_annotation_params = v),
+                        ("Annotation parameters: New line after '('", w.annotation_parens[0], |w, v| w.annotation_parens[0] = v),
+                        ("Annotation parameters: Place ')' on new line", w.annotation_parens[1], |w, v| w.annotation_parens[1] = v),
+                        ("Method call arguments: Take priority over call chain wrapping", w.prefer_params, |w, v| w.prefer_params = v),
+                        ("Parenthesized expression: Align when multiline", w.align_parens, |w, v| w.align_parens = v),
+                        ("Ensure right margin is not exceeded", w.ensure_margin, |w, v| w.ensure_margin = v),
+                        ("Method declaration parameters: Align parenthesised when multiline", w.align_brackets, |w, v| w.align_brackets = v),
+                        ("Throws keyword: Align when multiline", w.align_throws_keyword, |w, v| w.align_throws_keyword = v),
                         ("Text blocks: Align when multiline", w.align_text_blocks, |w, v| w.align_text_blocks = v),
                         ("'switch' statement: 'case' statement on new line", w.case_new_line, |w, v| w.case_new_line = v),
                         ("Braces placement: In lambda declaration: Next line", w.braces.lambda_next_line, |w, v| w.braces.lambda_next_line = v),
@@ -1877,6 +1893,7 @@ impl SettingsView {
                         ("Record components: Align when multiline", w.align_records, |w, v| w.align_records = v),
                         ("Record components: New line after '('", w.record_parens[0], |w, v| w.record_parens[0] = v),
                         ("Record components: Place ')' on new line", w.record_parens[1], |w, v| w.record_parens[1] = v),
+                        ("Record components: Annotations new line", w.record_annotations, |w, v| w.record_annotations = v),
                         ("Method declaration parameters: New line after '('", w.param_parens[0], |w, v| w.param_parens[0] = v),
                         ("Method declaration parameters: Place ')' on new line", w.param_parens[1], |w, v| w.param_parens[1] = v),
                         ("Method call arguments: New line after '('", w.call_parens[0], |w, v| w.call_parens[0] = v),

@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-43
 title: Reformat：Wrapping and Braces 页剩下的选项（第四十三批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-43
+pr: 303
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：这批做了 Java 的 Switch expressions 和 Extends keyword。`Wrapping::switch_wrap`（默认 Wrap if long，wrapping 下标 103）和 `extends_keyword`（默认 Do not wrap，下标 104），都加进 `Wrapping::any`。`chop` 里先试 `case_list_break`（`case` 后、`->` 或标签 `:` 前、括号外的逗号；三元的 `:` 不算结尾；遇到 `<` 不拆）和 `extends_keyword_break`（类头 `class` / `interface` / `enum` / `record` 之后、括号和尖括号外的关键字；以关键字开头的续行接着断）。缩进器的 `case_list` 记下 `case ` 后的列，下一行对齐过去；行尾逗号在括号里（解构模式）时不算；标签列表以 `:` 结尾的最后一行也开 case 体。设置页两个 Wrap 下拉框。测试 `wraps_case_label_lists_and_extends_keywords`（含 IntelliJ 的 testCaseLabelElementListEnum / Numbers）。语料：默认 5201 行不变；两个都 Chop 时 5211、Extends Wrap if long 时 5209，第二遍都 0 行。LABELED_STATEMENT_WRAP 在 IntelliJ 的 LabeledJavaBlock 里没用到（标签后的语句总是 WrapType.ALWAYS），留给下一批对照。
