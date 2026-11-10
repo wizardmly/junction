@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-71
 title: Reformat：Wrapping and Braces 页剩下的选项（第七十一批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-71
-pr:
+pr: 339
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Kotlin Assignment statement 的 Wrap always 现在也断裸 `x = y`（IntelliJ 对 KtBinaryExpression 的 EQ 也用 ASSIGNMENT_WRAP）。`always_assigns` 的 Kotlin 分支改成只排除 `+=` / `-=` / `*=` / `/=` / `%=`；`chop_long_lines` 的 `always_break` 多传上一行输出，新函数 `kotlin_statement` 在上一行以 `(` 或 `,` 结尾时（拆开的列表里的具名实参、形参默认值、构造函数属性参数）不断。测试加在 `wraps_kotlin_chains_supertypes_assignments_and_elvis_always`。Signal Kotlin 语料：默认 25404 行不变；强制 assignment Wrap always 80354 行，第二遍 0 行。注意：默认（Wrap if long）下过长的具名实参仍会在 `=` 后断行，这是之前就有的行为，没动。剩下的放到 sec33-reformat-rest-72。
