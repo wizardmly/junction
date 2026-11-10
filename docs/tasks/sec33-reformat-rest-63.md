@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-63
 title: Reformat：Wrapping and Braces 页剩下的选项（第六十三批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-63
-pr:
+pr: 327
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Kotlin 的 Function call arguments / Function declaration parameters 加 Wrap always。`chop_long_lines` 的 `always_break` 里，Kotlin 有其一是 Wrap always 时用一个 margin 为 0、只开这两个列表（Wrap always 的当 Chop down，链式调用 / 父类列表 / 赋值 / Elvis 关掉）的 `Wrapper` 去 `chop`，产生的行再进队列。`chop` 选列表时 Kotlin 原来一项的也拆，margin 为 0（Wrap always）时改成要两项以上（IntelliJ 的 `getWrappingStrategyForItemList` 第一项 wrapFirstElement=false，一项的列表不会变多行）。设置页 Kotlin 前两个下拉框用 LABELS_ALWAYS；settings.conf 前五位本来就用 `from_index_always` 读。测试 `wraps_kotlin_lists_always`。Kotlin 语料：默认 25404 行不变，两个都打开时 87808 行、第二遍 0 行。剩下的在 sec33-reformat-rest-64。
