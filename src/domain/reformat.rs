@@ -3703,7 +3703,8 @@ fn split_list_always(line: &str, kinds: AlwaysLists) -> Option<Vec<String>> {
 
 /// Java's 'for()' statement wrap: a header past the margin breaks after its
 /// `;`s (Chop down if long: after each; Wrap if long: where it must), the
-/// parts under the first with Align when multiline.
+/// parts under the first with Align when multiline; Wrap always: also a
+/// header that fits.
 fn wrap_for_statements(text: &str, keyword: &str, wrap: Wrap, align: bool, only: Option<Range<usize>>, margin: usize) -> (String, Option<Range<usize>>) {
     if wrap == Wrap::DoNotWrap {
         return (text.to_owned(), only);
@@ -3718,7 +3719,7 @@ fn wrap_for_statements(text: &str, keyword: &str, wrap: Wrap, align: bool, only:
         let plain = info.starts_in.unwrap_or(State::Code) == State::Code && !info.comment.iter().any(|c| *c);
         let mut parts = None;
         if let (true, true, Some(col)) = (selected, plain, keyword_paren(line, keyword)) {
-            if width(line) > margin {
+            if wrap == Wrap::WrapAlways || width(line) > margin {
                 // The `;`s in the header's own parentheses.
                 let open = line.len() - line.trim_start().len() + line.trim_start().find('(').unwrap_or(0);
                 let mut depth = 0;
@@ -3741,6 +3742,8 @@ fn wrap_for_statements(text: &str, keyword: &str, wrap: Wrap, align: bool, only:
                         _ => {}
                     }
                 }
+                // Nothing after a `;` / `|` that ends the line (a header already wrapped).
+                points.retain(|p| !line[*p..].trim().is_empty());
                 if !points.is_empty() {
                     let lead = &line[..line.len() - line.trim_start().len()];
                     let cont = if align { " ".repeat(col) } else { format!("{lead}        ") };
@@ -3753,7 +3756,7 @@ fn wrap_for_statements(text: &str, keyword: &str, wrap: Wrap, align: bool, only:
                     pieces.push(line[from..].trim());
                     pieces[0] = line[..points[0]].trim_end();
                     let v: Vec<String> = match wrap {
-                        Wrap::ChopIfLong => pieces.iter().enumerate().map(|(n, t)| if n == 0 { t.to_string() } else { format!("{cont}{t}") }).collect(),
+                        Wrap::ChopIfLong | Wrap::WrapAlways => pieces.iter().enumerate().map(|(n, t)| if n == 0 { t.to_string() } else { format!("{cont}{t}") }).collect(),
                         _ => {
                             let mut v: Vec<String> = Vec::new();
                             let mut current = pieces[0].to_string();
@@ -8471,6 +8474,21 @@ mod tests {
         // The deconstruction list puts its parentheses on lines of their own (on by default).
         assert_eq!(java(all, t), "class A {\n    @A(x = 1,\n            y = {2, 3})\n    void f(Object o) {\n        int[] a = {1,\n                2};\n        if (o instanceof P(\n                int x,\n                int y\n        )) {\n            go(1, 2);\n        }\n    }\n}\n");
         assert_eq!(java(Wrapping { align_arrays: true, align_annotation_params: true, ..all }, t), "class A {\n    @A(x = 1,\n       y = {2, 3})\n    void f(Object o) {\n        int[] a = {1,\n                   2};\n        if (o instanceof P(\n                int x,\n                int y\n        )) {\n            go(1, 2);\n        }\n    }\n}\n");
+    }
+
+    #[test]
+    fn wraps_statement_headers_always() {
+        let java = |w: Wrapping, text: &str| {
+            let style = IndentStyle { wrapping: Some(w), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let t = "class A {\n    void f() {\n        for (int i = 0; i < n; i++) {\n        }\n        for (String s : list) {\n        }\n        try (A a = open(); B b = open()) {\n        } catch (IOException | RuntimeException e) {\n        }\n    }\n}\n";
+        let all = Wrapping { for_wrap: Wrap::WrapAlways, resource_wrap: Wrap::WrapAlways, catch_wrap: Wrap::WrapAlways, ..Wrapping::JAVA };
+        assert_eq!(java(Wrapping { catch_wrap: Wrap::DoNotWrap, ..Wrapping::JAVA }, t), t);
+        assert_eq!(java(all, t), "class A {\n    void f() {\n        for (int i = 0;\n             i < n;\n             i++) {\n        }\n        for (String s : list) {\n        }\n        try (A a = open();\n             B b = open()) {\n        } catch (IOException |\n                 RuntimeException e) {\n        }\n    }\n}\n");
+        assert_eq!(java(Wrapping { align_for: false, align_resources: false, align_catch: false, ..all }, t), "class A {\n    void f() {\n        for (int i = 0;\n                i < n;\n                i++) {\n        }\n        for (String s : list) {\n        }\n        try (A a = open();\n                B b = open()) {\n        } catch (IOException |\n                RuntimeException e) {\n        }\n    }\n}\n");
     }
 
     #[test]
