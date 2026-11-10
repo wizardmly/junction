@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-61
 title: Reformat：Wrapping and Braces 页剩下的选项（第六十一批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-61
-pr:
+pr: 323
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Java 的 Assignment statement / 'assert' statement / Extends keyword 加 Wrap always。和 #322 一样在 `chop_long_lines` 的 `always_break` 里做：依次试 `extends_keyword_break`（mode 传 WrapAlways，走每个关键字都断的分支）、`assert_break`、`assignment_break`（margin 取 `usize::MAX`；Assignment sign on next line 拆出来的 `= value` 行头为空，过滤掉，免得再拆），最后才试 Binary / Ternary；产生的行再进队列，所以 `int x = a + b;` 两个都开时拆成三行（值里的运算符多一层续行缩进，和现有 Chop down 的叠加一致）。设置页 Java 主下拉框五个都用 LABELS_ALWAYS，Extends keyword / 'assert' statement 加进 `wrap_option` 的 Wrap always 列表；settings.conf 这几位本来就用 `from_index_always` 读。测试 `wraps_assignment_assert_and_extends_keyword_always`。语料：默认 5201 行不变，三个都打开时 14735 行、第二遍 0 行。剩下的在 sec33-reformat-rest-62。
