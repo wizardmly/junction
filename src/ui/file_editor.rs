@@ -1592,7 +1592,7 @@ impl FileEditor {
     /// the expression (or, in Kotlin, it's the parameter's default value).
     fn introduce_parameter_action(&mut self, _: &IntroduceParameter, window: &mut Window, cx: &mut Context<Self>) {
         use crate::domain::introduce_parameter::{apply, call_edit_at, edits};
-        use crate::index::introduce_parameter::{call_sites, plan};
+        use crate::index::introduce_parameter::{call_sites, plan_with};
         use crate::index::lang::Lang;
         use crate::infra::project_files::DiskFiles;
         use crate::usecase::update_calls;
@@ -1600,7 +1600,7 @@ impl FileEditor {
         let Some((lang, style)) = self.jvm_style().filter(|_| !self.read_only()) else { return };
         let text = self.text(cx);
         let selection = self.state.read(cx).selected_range();
-        let (plan, source) = match plan(lang, &text, selection) {
+        let (plan, source) = match plan_with(lang, &text, selection, &|n| self.class_texts(n, false, cx)) {
             Ok(found) => found,
             Err(message) => return Self::hint(TITLE, format!("Cannot perform refactoring.\n{message}"), window, cx),
         };

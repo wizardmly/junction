@@ -37,6 +37,12 @@ fn normalized(text: &str) -> String {
 /// Introduce Parameter for the selection; the plan and where the name
 /// comes from.
 pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<(ParameterPlan, NameSource), String> {
+    plan_with(lang, text, selection, &|_| Vec::new())
+}
+
+/// [`plan`], with the texts of the project's classes by simple name, so a
+/// Java field declared in a superclass finds its getter there.
+pub fn plan_with(lang: Lang, text: &str, selection: Range<usize>, classes: super::catches::Classes) -> Result<(ParameterPlan, NameSource), String> {
     if !matches!(lang, Lang::Kotlin | Lang::Java) {
         return Err("Introduce Parameter works in Kotlin and Java files".into());
     }
@@ -133,19 +139,18 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<(Paramete
         taken: decls.iter().map(|d| d.name.clone()).collect(),
         block: None,
         delegate: (lang == Lang::Java).then(|| delegate_site(function, text)).flatten(),
-        fields: if lang == Lang::Java { java_fields(node, function, text) } else { Vec::new() },
+        fields: if lang == Lang::Java { java_fields(node, function, text, classes) } else { Vec::new() },
         class_range: std::iter::successors(Some(function), |n| n.parent()).filter(|n| n.parent().is_some_and(|p| p.kind() == "program")).map(|n| n.byte_range()).next().unwrap_or(0..text.len()),
         package: crate::domain::debugger::package_of(text),
     };
     Ok((plan, super::introduce::name_source(lang, node, text)))
 }
 
-/// The fields of the Java method's class used in the expression (`rate`,
-/// `this.rate`) that have a getter (`getRate()`, `isReady()` for a
-/// boolean, no parameters), as IntelliJ's `Util.anyFieldsWithGettersPresent`.
-fn java_fields(expression: Node, function: Node, text: &str) -> Vec<crate::domain::introduce_parameter::FieldUse> {
-    use crate::domain::introduce_parameter::{Access, FieldUse};
-    let Some(class) = function.parent().filter(|p| matches!(p.kind(), "class_body" | "enum_body")) else { return Vec::new() };
+/// A Java class body's fields that have a getter in it: (name, getter,
+/// access); `inherited` leaves out private ones (a subclass can't use
+/// them) and counts protected as package access.
+fn class_fields(class: Node, text: &str, inherited: bool) -> Vec<(String, String, crate::domain::introduce_parameter::Access)> {
+    use crate::domain::introduce_parameter::Access;
     let members = children(class);
     let getter_of = |field: &str, ty: &str| {
         let cap: String = field.chars().take(1).flat_map(char::to_uppercase).chain(field.chars().skip(1)).collect();
@@ -158,12 +163,14 @@ fn java_fields(expression: Node, function: Node, text: &str) -> Vec<crate::domai
             })
         })
     };
-    // name -> (getter, access)
-    let mut fields: Vec<(String, String, Access)> = Vec::new();
+    let mut fields = Vec::new();
     for m in members.iter().filter(|m| m.kind() == "field_declaration") {
         let modifiers = children(*m).into_iter().find(|c| c.kind() == "modifiers").map(|c| &text[c.byte_range()]).unwrap_or("");
         let words: Vec<&str> = modifiers.split_whitespace().collect();
         let access = if words.contains(&"private") {
+            if inherited {
+                continue;
+            }
             Access::Private
         } else if words.contains(&"public") {
             Access::Public
@@ -178,6 +185,34 @@ fn java_fields(expression: Node, function: Node, text: &str) -> Vec<crate::domai
                 }
             }
         }
+    }
+    fields
+}
+
+/// The fields of the Java method's class used in the expression (`rate`,
+/// `this.rate`) that have a getter (`getRate()`, `isReady()` for a
+/// boolean, no parameters), as IntelliJ's `Util.anyFieldsWithGettersPresent`.
+fn java_fields(expression: Node, function: Node, text: &str, classes: super::catches::Classes) -> Vec<crate::domain::introduce_parameter::FieldUse> {
+    use super::catches::{bare_type, find_class, Finder};
+    use crate::domain::introduce_parameter::FieldUse;
+    let Some(class) = function.parent().filter(|p| matches!(p.kind(), "class_body" | "enum_body")) else { return Vec::new() };
+    // name, getter, access: the class's own fields, then its superclasses'
+    // (not private ones), the nearest declaration winning.
+    let mut fields = class_fields(class, text, false);
+    let finder = Finder { classes, own: text };
+    let mut superclass = class.parent().and_then(|c| c.child_by_field_name("superclass")).and_then(|s| s.named_child(0)).map(|s| (finder.qualify(bare_type(&text[s.byte_range()]), text), text.to_owned()));
+    for _ in 0..8 {
+        let Some((name, context)) = superclass.take() else { break };
+        let Some(source) = finder.class_text(&name, &context) else { break };
+        let Some(tree) = symbols::parse(Lang::Java, &source) else { break };
+        let Some(node) = find_class(tree.root_node(), &source, name.rsplit('.').next().unwrap_or(&name)) else { break };
+        let Some(body) = node.child_by_field_name("body") else { break };
+        for field in class_fields(body, &source, true) {
+            if !fields.iter().any(|(f, _, _)| *f == field.0) {
+                fields.push(field);
+            }
+        }
+        superclass = node.child_by_field_name("superclass").and_then(|s| s.named_child(0)).map(|s| (finder.qualify(bare_type(&source[s.byte_range()]), &source), source.clone()));
     }
     if fields.is_empty() {
         return Vec::new();
@@ -528,6 +563,22 @@ mod tests {
         use crate::domain::introduce_parameter::Access;
         assert_eq!(fields, [("rate", "getRate", Access::Private), ("this.base", "getBase", Access::Package), ("ready", "isReady", Access::Public)]);
         assert_eq!((&text[plan.class_range.clone()][..7], plan.package.as_str()), ("class A", "p"));
+        // Fields of superclasses, in other files: not private ones, the nearest
+        // declaration winning; protected counts as package access.
+        let base = "package p;\npublic class Base extends Root {\n  protected double rate;\n  private int hidden;\n  public int count;\n  double getRate() { return rate; }\n  int getHidden() { return hidden; }\n  public int getCount() { return count; }\n}\n";
+        let root = "package p;\nclass Root {\n  public String name;\n  int count;\n  public String getName() { return name; }\n  int getCount() { return 0; }\n}\n";
+        let text = "package p;\nclass Cart extends Base {\n  int hidden;\n  double total(int price) { return price * rate + hidden + count + name.length(); }\n}\n";
+        let classes = |n: &str| match n {
+            "Base" => vec![base.to_owned()],
+            "Root" => vec![root.to_owned()],
+            _ => Vec::new(),
+        };
+        let expr = "price * rate + hidden + count + name.length()";
+        let at = text.find(expr).unwrap();
+        let (plan, _) = plan_with(Lang::Java, text, at..at + expr.len(), &classes).unwrap();
+        let fields: Vec<(&str, &str, Access)> = plan.fields.iter().map(|f| (&expr[f.range.clone()], f.getter.as_str(), f.access)).collect();
+        assert_eq!(fields, [("rate", "getRate", Access::Package), ("count", "getCount", Access::Public), ("name", "getName", Access::Public)]);
+        assert!(plan_with(Lang::Java, text, at..at + expr.len(), &|_| Vec::new()).unwrap().0.fields.is_empty());
     }
 
     #[test]
