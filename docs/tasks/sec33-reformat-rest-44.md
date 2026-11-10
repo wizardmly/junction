@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-44
 title: Reformat：Wrapping and Braces 页剩下的选项（第四十四批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-44
+pr: 304
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：这批做了 Java 的 Labeled statement、Align parenthesised when multiline（ALIGN_MULTILINE_METHOD_BRACKETS）和 Throws keyword 的 Align when multiline（ALIGN_THROWS_KEYWORD）。IntelliJ 没有 LABELED_STATEMENT_WRAP 字段（provider 列了名字但 CommonCodeStyleSettings 里没有，UI 不显示），LabeledJavaBlock 总是在 `:` 后用 WrapType.ALWAYS，所以 `split_label` 在 `split_bodies_once` 里无条件拆（只在块里、上一行代码以 `;` `{` `}` `:` 结尾时，避开三元的 `a : b` 续行）。`Wrapping::align_brackets`（下标 105）和 `align_throws_keyword`（下标 106），默认都关。`Open::bracket` 记方法 / 调用 `(` 的列（`creates` 排除 `new Foo(` 和 switch / synchronized / try / assert），行首的 `)` 关它时缩进到这一列，`bracket_base` 让这一行打开的 `{` 仍按语句缩进；`declaration_indent` 记最后一个打开声明参数的行的缩进，`throws ` 开头的行打开选项时用它。设置页两个复选框。测试 `lays_out_labels_brackets_and_throws_keywords`。语料：默认 5201 行不变；两项打开时 5248 行，第二遍 0 行。
