@@ -1225,7 +1225,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
                 let (a, only) = wrap_for_statements(&a, "catch", w.catch_wrap, w.align_catch, only, margin);
                 let (a, only) = header_parens(&a, "for", w.for_parens, only);
                 let (a, only) = header_parens(&a, "try", w.resource_parens, only);
-                let (a, only) = wrap_builder_calls(&a, &indents.builders, w.wrap_first_call, only);
+                let (a, only) = wrap_builder_calls(&a, &indents.builders, w.chain == Wrap::WrapAlways, w.wrap_first_call, only);
                 let (a, only) = list_parens(&a, false, w.call_parens, w.param_parens, w.record_parens, w.expr_parens, w.decon_parens, [w.array_parens, w.annotation_parens], only);
                 wrapped_annotations = a;
                 (wrapped_annotations, only)
@@ -5158,9 +5158,10 @@ fn keep_builder_indents(raw: &[&str], out: &mut [String], choppable: &[bool], na
 /// chained call by one of `names` always wraps, as IntelliJ's
 /// `ChainMethodCallsBlockBuilder` does, except the chain's first call
 /// (unless Wrap first call is on and a call follows it). Only a line's
-/// outermost chain, not one inside an argument.
-fn wrap_builder_calls(text: &str, names: &[String], first: bool, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
-    if names.is_empty() || !names.iter().any(|n| text.contains(&format!(".{n}("))) {
+/// outermost chain, not one inside an argument. `all`: Chained method
+/// calls set to Wrap always, every call a builder.
+fn wrap_builder_calls(text: &str, names: &[String], all: bool, first: bool, only: Option<Range<usize>>) -> (String, Option<Range<usize>>) {
+    if !all && (names.is_empty() || !names.iter().any(|n| text.contains(&format!(".{n}(")))) {
         return (text.to_owned(), only);
     }
     let lines = scan(text, false);
@@ -5170,7 +5171,7 @@ fn wrap_builder_calls(text: &str, names: &[String], first: bool, only: Option<Ra
     for (ix, line) in raw.iter().enumerate() {
         let info = &lines[ix];
         let plain = info.starts_in.unwrap_or(State::Code) == State::Code;
-        let cuts = if plain && only.as_ref().is_none_or(|r| r.contains(&ix)) { builder_cuts(line, info, names, first) } else { Vec::new() };
+        let cuts = if plain && only.as_ref().is_none_or(|r| r.contains(&ix)) { builder_cuts(line, info, names, all, first) } else { Vec::new() };
         if cuts.is_empty() {
             out.push((*line).to_owned());
             continue;
@@ -5190,7 +5191,7 @@ fn wrap_builder_calls(text: &str, names: &[String], first: bool, only: Option<Ra
 }
 
 /// Where `wrap_builder_calls` breaks `line`: before each builder call's `.`.
-fn builder_cuts(line: &str, info: &Line, names: &[String], first: bool) -> Vec<usize> {
+fn builder_cuts(line: &str, info: &Line, names: &[String], all: bool, first: bool) -> Vec<usize> {
     let lead = line.len() - line.trim_start().len();
     let mut cuts = Vec::new();
     // Per bracket depth: calls so far in the chain at hand, and its first
@@ -5231,7 +5232,7 @@ fn builder_cuts(line: &str, info: &Line, names: &[String], first: bool) -> Vec<u
                         cuts.push(f);
                     }
                 }
-                if names.iter().any(|n| *n == name) {
+                if all || names.iter().any(|n| *n == name) {
                     if top.0 > 0 {
                         cuts.push(i);
                     } else if first {
@@ -8489,6 +8490,22 @@ mod tests {
         assert_eq!(java(Wrapping { catch_wrap: Wrap::DoNotWrap, ..Wrapping::JAVA }, t), t);
         assert_eq!(java(all, t), "class A {\n    void f() {\n        for (int i = 0;\n             i < n;\n             i++) {\n        }\n        for (String s : list) {\n        }\n        try (A a = open();\n             B b = open()) {\n        } catch (IOException |\n                 RuntimeException e) {\n        }\n    }\n}\n");
         assert_eq!(java(Wrapping { align_for: false, align_resources: false, align_catch: false, ..all }, t), "class A {\n    void f() {\n        for (int i = 0;\n                i < n;\n                i++) {\n        }\n        for (String s : list) {\n        }\n        try (A a = open();\n                B b = open()) {\n        } catch (IOException |\n                RuntimeException e) {\n        }\n    }\n}\n");
+    }
+
+    #[test]
+    fn wraps_chained_calls_always() {
+        let java = |w: Wrapping, text: &str| {
+            let style = IndentStyle { wrapping: Some(w), ..Default::default() };
+            let once = reformat_indented(ImportStyle::Java, text, None, &style);
+            assert_eq!(reformat_indented(ImportStyle::Java, &once, None, &style), once, "stable");
+            once
+        };
+        let t = "class A {\n    void f() {\n        String s = list.stream().map(x -> x.trim()).collect(toList());\n        System.out.println(s);\n        go(a.b().c());\n        // a.b().c();\n    }\n}\n";
+        assert_eq!(java(Wrapping::JAVA, t), t);
+        let w = Wrapping { chain: Wrap::WrapAlways, ..Wrapping::JAVA };
+        // The first call stays (unless Wrap first call); a chain inside an argument stays.
+        assert_eq!(java(w, t), "class A {\n    void f() {\n        String s = list.stream()\n                .map(x -> x.trim())\n                .collect(toList());\n        System.out.println(s);\n        go(a.b().c());\n        // a.b().c();\n    }\n}\n");
+        assert!(java(Wrapping { wrap_first_call: true, ..w }, t).contains("        String s = list\n                .stream()\n                .map(x -> x.trim())\n"));
     }
 
     #[test]

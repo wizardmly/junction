@@ -2,11 +2,11 @@
 id: sec33-reformat-rest-59
 title: Reformat：Wrapping and Braces 页剩下的选项（第五十九批）
 features: 第 33 节
-status: open
-owner:
-branch:
-pr:
-claimed:
+status: done
+owner: Claude Code / Jake
+branch: task/sec33-reformat-rest-59
+pr: 320
+claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
 
@@ -22,4 +22,8 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Chained method calls 的 Wrap always（IntelliJ METHOD_CALL_CHAIN_WRAP = WRAP_ALWAYS）。
+  - `wrap_builder_calls` / `builder_cuts` 加 `all` 参数：Wrap always 时把链里每个调用都当 Builder method，链的第一个调用留在原处（勾 Wrap first call 且后面还有调用时也断），其余每个 `.call(` 前断行；只拆一行最外层的链，实参里的链不动（和 Builder methods 一样）。设置页 Java 的 Chained method calls 下拉框加 Wrap always（`i <= 2`）。
+  - Align when multiline 对这样拆开的链还不起作用（Builder methods 也一样），续行按续行缩进。
+  - 测试 `wraps_chained_calls_always`；Signal 语料默认 5201 行不变，强制打开 7362 行，第二遍 0 行。
+  - 剩下的见 sec33-reformat-rest-60。
