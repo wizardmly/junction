@@ -664,19 +664,40 @@ impl Writer<'_, '_> {
         let end = self.color(attr(g, "endColor")).unwrap_or(start);
         let center = self.color(attr(g, "centerColor"));
         let fraction = |name: &str| attr(g, name).and_then(|v| v.trim_end_matches('%').parse::<f32>().ok().map(|f| if v.ends_with('%') { f / 100. } else { f }));
-        let mut stops = String::new();
-        let mut stop = |offset: f32, rgba: u32| {
-            let (c, a) = rgb(rgba);
-            let _ = write!(stops, "<stop offset=\"{offset}\" stop-color=\"{c}\" stop-opacity=\"{a}\"/>");
-        };
-        stop(0., start);
+        let kind = attr(g, "type").unwrap_or("linear");
+        let mut colors = vec![(0., start)];
         if let Some(c) = center {
-            stop(if attr(g, "type") == Some("radial") { 0.5 } else { fraction("centerX").unwrap_or(0.5) }, c);
+            colors.push((if kind == "linear" { fraction("centerX").unwrap_or(0.5) } else { 0.5 }, c));
         }
-        stop(1., end);
+        colors.push((1., end));
+        let mut stops = String::new();
+        for (offset, rgba) in &colors {
+            let (c, a) = rgb(*rgba);
+            let _ = write!(stops, "<stop offset=\"{offset}\" stop-color=\"{c}\" stop-opacity=\"{a}\"/>");
+        }
         self.ids += 1;
         let id = format!("shape{}", self.ids);
-        match attr(g, "type").unwrap_or("linear") {
+        match kind {
+            "sweep" => {
+                // SweepGradient: the colors around the center, clockwise
+                // from 3 o'clock. SVG has no conic gradient, so a pattern
+                // of thin wedges, each in its interpolated color.
+                let (cx, cy) = (x + w * fraction("centerX").unwrap_or(0.5), y + h * fraction("centerY").unwrap_or(0.5));
+                let r = (w.max(1.).powi(2) + h.max(1.).powi(2)).sqrt() * 2.;
+                let _ = write!(out, "<defs><pattern id=\"{id}\" patternUnits=\"userSpaceOnUse\" x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\"><g transform=\"translate({} {})\">", -x, -y);
+                const WEDGES: usize = 180;
+                let point = |t: f32| {
+                    let a = t * std::f32::consts::TAU;
+                    (cx + r * a.cos(), cy + r * a.sin())
+                };
+                for i in 0..WEDGES {
+                    let (t0, t1) = (i as f32 / WEDGES as f32, (i as f32 + 1.5).min(WEDGES as f32) / WEDGES as f32);
+                    let (c, a) = rgb(interpolate(&colors, (i as f32 + 0.5) / WEDGES as f32));
+                    let ((x0, y0), (x1, y1)) = (point(t0), point(t1));
+                    let _ = write!(out, "<path d=\"M{cx:.2},{cy:.2}L{x0:.2},{y0:.2}L{x1:.2},{y1:.2}z\" fill=\"{c}\" fill-opacity=\"{a}\"/>");
+                }
+                out.push_str("</g></pattern></defs>");
+            }
             "radial" => {
                 let (cx, cy) = (x + w * fraction("centerX").unwrap_or(0.5), y + h * fraction("centerY").unwrap_or(0.5));
                 // A radius in dp, or a fraction of the shape (`50%`).
@@ -689,7 +710,7 @@ impl Writer<'_, '_> {
                 });
                 let _ = write!(out, "<defs><radialGradient id=\"{id}\" gradientUnits=\"userSpaceOnUse\" cx=\"{cx}\" cy=\"{cy}\" r=\"{radius}\">{stops}</radialGradient></defs>");
             }
-            // Linear, and sweep drawn as linear (SVG has no conic gradient).
+            // Linear.
             _ => {
                 // Android's angles, multiples of 45: 0 left to right, 90 bottom to top.
                 let angle = attr(g, "angle").and_then(|a| a.parse::<i32>().ok()).unwrap_or(0).rem_euclid(360);
@@ -752,6 +773,22 @@ fn fill_rect((x, y, w, h): Rect, rgba: u32, out: &mut String) {
     let _ = write!(out, "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"{c}\" fill-opacity=\"{a}\"/>");
 }
 
+/// The color at `t` (0–1) between the `(offset, rgba)` stops, each
+/// channel linear between its two neighbours.
+fn interpolate(stops: &[(f32, u32)], t: f32) -> u32 {
+    let Some(i) = stops.iter().position(|(o, _)| *o >= t) else { return stops.last().map_or(0, |s| s.1) };
+    if i == 0 {
+        return stops[0].1;
+    }
+    let ((o0, c0), (o1, c1)) = (stops[i - 1], stops[i]);
+    let f = if o1 > o0 { (t - o0) / (o1 - o0) } else { 1. };
+    (0..4).fold(0, |acc, k| {
+        let shift = 24 - 8 * k;
+        let (a, b) = (((c0 >> shift) & 0xff) as f32, ((c1 >> shift) & 0xff) as f32);
+        acc | (((a + (b - a) * f).round() as u32) << shift)
+    })
+}
+
 fn rgb(rgba: u32) -> (String, f32) {
     (format!("#{:06x}", rgba >> 8), (rgba & 0xff) as f32 / 255.)
 }
@@ -785,6 +822,15 @@ mod tests {
         let image = render_with(&oval, &[]).unwrap();
         assert_eq!(image.width, DEFAULT_SIZE);
         assert!(image.svg.contains("<linearGradient id=\"shape1\" gradientUnits=\"userSpaceOnUse\" x1=\"50\" y1=\"100\" x2=\"50\" y2=\"0\">"), "{}", image.svg);
+        // A sweep: wedges clockwise from 3 o'clock, red through green to blue.
+        let sweep = format!("<shape {NS} android:shape=\"oval\"><size android:width=\"40dp\" android:height=\"40dp\"/><gradient android:type=\"sweep\" android:startColor=\"#f00\" android:centerColor=\"#0f0\" android:endColor=\"#00f\"/></shape>");
+        let svg = render_with(&sweep, &[]).unwrap().svg;
+        assert!(svg.contains("<pattern id=\"shape1\" patternUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\">"), "{svg}");
+        assert_eq!(svg.matches("<path d=\"M20.00,20.00L").count(), 180);
+        assert!(svg.contains("<path d=\"M20.00,20.00L133.14,20.00L"), "{svg}");
+        assert!(svg.contains("fill=\"#fe0100\""), "{svg}");
+        assert!(svg.contains("fill=\"url(#shape1)\""));
+        assert_eq!(interpolate(&[(0., 0xff0000ff), (0.5, 0x00ff00ff), (1., 0x0000ffff)], 0.75), 0x0080_80ff);
         assert!(image.svg.contains("<ellipse cx=\"50\" cy=\"50\" rx=\"50\" ry=\"50\" fill=\"url(#shape1)\"/>"), "{}", image.svg);
         // Corners that differ: a path.
         let tab = format!("<shape {NS}><solid android:color=\"#fff\"/><corners android:topLeftRadius=\"8dp\" android:topRightRadius=\"8dp\"/><size android:width=\"40dp\" android:height=\"20dp\"/></shape>");
