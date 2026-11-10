@@ -3455,9 +3455,10 @@ fn brace_layout(text: &str, kotlin: bool, braces: &Braces, only: Option<Range<us
         if matches!(first, "if" | "else" | "for" | "while" | "do" | "try" | "catch" | "finally" | "switch" | "synchronized") {
             return Some(braces.other_next_line);
         }
-        // A lambda's `{` (not a switch rule's).
+        // A lambda's `{` (not a switch rule's): to the next line when on;
+        // off, as written (IntelliJ joins it only without Keep line breaks).
         if head.ends_with("->") && !matches!(first, "case" | "default") {
-            return Some(braces.lambda_next_line);
+            return braces.lambda_next_line.then_some(true);
         }
         if head.contains("->") || head.ends_with('=') || head.ends_with(']') || head.contains("new ") {
             return None;
@@ -7394,7 +7395,7 @@ mod tests {
         let o = java(next, t);
         assert_eq!(o, "class A {\n    void f() {\n        run(() ->\n        {\n            g();\n        });\n        switch (k) {\n            case 1 -> {\n                h();\n            }\n        }\n    }\n}\n");
         assert_eq!(java(next, &o), o);
-        assert_eq!(java(Wrapping::JAVA, &o), t);
+        assert_eq!(java(Wrapping::JAVA, &o), o);
         // IntelliJ's testLambdaBraceStyle.
         let r = java(next, "class A {\n    void f() {\n        Runnable r = () -> {\n        };\n    }\n}\n");
         assert_eq!(r, "class A {\n    void f() {\n        Runnable r = () ->\n        {\n        };\n    }\n}\n");

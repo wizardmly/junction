@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-- 2026-11-10：这批只做 Java 的 In lambda declaration: Next line。`Braces::lambda_next_line`（不在 `Braces::values` 的七个里，settings.conf wrapping 下标 100 单独存）；`brace_layout` 的 `brace_next_line` 对以 `->` 结尾、不是 `case` / `default` 开头的行返回它；缩进器里以 `{` 开头、上一行代码以 `->` 结尾的行取上一行的缩进（不然在实参括号里会拿到续行缩进）。设置页加了复选框。测试 `lambda_braces_on_next_line`（含 IntelliJ 的 testLambdaBraceStyle）。语料：默认 0 行；打开时第二遍 0 行。
+- 2026-11-10：这批只做 Java 的 In lambda declaration: Next line。`Braces::lambda_next_line`（不在 `Braces::values` 的七个里，settings.conf wrapping 下标 100 单独存）；`brace_layout` 的 `brace_next_line` 对以 `->` 结尾、不是 `case` / `default` 开头的行，开着时返回下一行，关着时保持原样（IntelliJ 的 testLambdaBraceMoveToPrevLine 要关掉 Keep line breaks 才会把 `{` 移回上一行）；缩进器里以 `{` 开头、上一行代码以 `->` 结尾的行取上一行的缩进（不然在实参括号里会拿到续行缩进）。设置页加了复选框。测试 `lambda_braces_on_next_line`（含 IntelliJ 的 testLambdaBraceStyle）。语料：默认 0 行；打开时第二遍 0 行。
