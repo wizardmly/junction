@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-39
 title: Reformat：Wrapping and Braces 页剩下的选项（第三十九批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-39
-pr:
+pr: 296
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：这批做 Java 的 Do not indent top level class members 和 Wrap trailing semicolon after call chain。`Wrapping::flat_top_level` / `semicolon_after_chain`（settings.conf wrapping 下标 96、97，默认 0）。前者在 `apply_brackets` 里：没有外层括号的类体 `{`（`declaration_braces` 判为声明体）内容不加缩进。后者是缩进后的后处理 `chain_semicolons`：找以 `.` 开头、以 `);` 结尾的链尾行，往上找到语句头，用 `top_level_assign` 分出声明的初始值，`chain_calls` 数最外层链的方法调用（`new X()` 和 Builder methods 不算，照 `ChainMethodCallsBlockBuilder.isLongCallChain`，至少 3 个），把 `;` 拆成单独一行；声明的 `;` 和链的续行同缩进，调用语句的和语句同缩进（照 IntelliJ JavaFormatterSpaceTest 的 testSemicolOnNewLineInLongCallChainWithWrapping）。`return`、赋值、`for` 头里的不动：IntelliJ 只在 visitField / visitLocalVariable / 表达式语句的方法调用上判断。第二遍时已单独的 `;` 行只重设缩进。测试 `flat_top_level_members_and_chain_semicolons`。语料：默认 0 行；两项都打开，第二遍 0 行。
