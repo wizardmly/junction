@@ -1253,6 +1253,10 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     // the indent of the last line that opened a declaration's parameters.
     let align_throws_keyword = flavor == Flavor::Java && wrapping.is_some_and(|w| w.align_throws_keyword) && !tabs;
     let mut declaration_indent: Option<usize> = None;
+    // Java's Ensure right margin is not exceeded, for block comments: the
+    // margin, and the lines their breaks added.
+    let comment_margin = wrapping.filter(|w| flavor == Flavor::Java && w.ensure_margin).map(|_| indents.right_margin.unwrap_or(RIGHT_MARGIN));
+    let mut split_comments = 0;
     // Java text blocks are laid out (IntelliJ's TextBlockBlock): (last line,
     // common indent in chars, new indent) of the one being put out.
     let text_blocks = flavor == Flavor::Java && wrapping.is_some();
@@ -1598,6 +1602,22 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         } else {
             apply_brackets(&mut stack, &info.brackets, leading_closers, ix, indent, indent, cont, step, None, [false, false, false, false, flat_top, false], text_line, &bodies[ix], flavor == Flavor::Java, bracket_sizes);
         }
+        // Ensure right margin is not exceeded: a block comment's or Javadoc's
+        // line past the margin breaks at a space (the comment alone on it).
+        let mut line_out = line_out;
+        if let Some(margin) = comment_margin.filter(|_| selected) {
+            let comment_only = (matches!(starts, State::Block(_)) || trimmed.starts_with("/*")) && line_out.find("*/").is_none_or(|at| at + 2 == line_out.trim_end().len());
+            if comment_only && width(&line_out) > margin {
+                if let Some(mut parts) = block_comment_break(&line_out, margin) {
+                    line_out = parts.pop().unwrap_or_default();
+                    split_comments += parts.len();
+                    for part in parts {
+                        out.push(part);
+                        choppable.push(false);
+                    }
+                }
+            }
+        }
         out.push(line_out);
         choppable.push(selected && is_code_line);
         if is_code_line {
@@ -1649,7 +1669,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
     if wrapping.is_some_and(|w| flavor == Flavor::Java && w.modifier_wrap) {
         let before = out.len();
         wrap_modifier_lists(&mut out, &mut choppable);
-        let added = out.len() - before;
+        let added = out.len() - before + split_comments;
         // Lines it split: lay them out again, so what was aligned after the
         // modifiers (parameters under the first) follows them.
         if added > 0 && nested < 2 {
@@ -1662,7 +1682,7 @@ fn reformat_pass(flavor: Flavor, text: &str, only: Option<Range<usize>>, indents
         let wrapper = Wrapper { kotlin, unit: &unit, cont: pad(cont), margin: indents.right_margin.unwrap_or(RIGHT_MARGIN), w, tabs };
         let before = out.len();
         let chopped = chop_long_lines(out, choppable, &wrapper);
-        let added = chopped.len() - before;
+        let added = chopped.len() - before + split_comments;
         let text = chopped.join("\n");
         // Lines it split: lay the result out once more, so what follows a
         // new continuation line (a lambda's body, the blank lines around a
@@ -4160,7 +4180,8 @@ fn list_items<'a>(line: &'a str, open: usize, close: usize, is_code: &dyn Fn(usi
 /// break helps.
 /// Where a Java method header's `throws` starts (after its `) `).
 /// Ensure right margin is not exceeded: a `//` comment's line past the
-/// margin broken at its last space short of it, the space kept at the end
+/// margin broken at its last space ending two columns short of it (as
+/// IntelliJ does), the space kept at the end
 /// of the first line, the rest a `// ` comment at the same indent
 /// (IntelliJ's testWrapLongLine).
 fn comment_break(line: &str, margin: usize) -> Option<Vec<String>> {
@@ -4168,12 +4189,54 @@ fn comment_break(line: &str, margin: usize) -> Option<Vec<String>> {
     let body = lead + line[lead..].find("//")? + 2;
     let mut cut = None;
     for (i, c) in line.char_indices().skip_while(|(i, _)| *i <= body) {
-        if c == ' ' && width(&line[..=i]) < margin && !line[i + 1..].trim().is_empty() && !line[body..i].trim().is_empty() {
+        if c == ' ' && width(&line[..=i]) + 1 < margin && !line[i + 1..].trim().is_empty() && !line[body..i].trim().is_empty() {
             cut = Some(i);
         }
     }
     let cut = cut?;
     Some(vec![line[..=cut].to_owned(), format!("{}// {}", &line[..lead], line[cut + 1..].trim_start())])
+}
+
+/// Ensure right margin is not exceeded: a line of a block comment or
+/// Javadoc past the margin broken at its last space two columns short of
+/// it (the space
+/// kept), again while the rest is too long. The rest goes under a ` * `
+/// after a `/**` or `*` line, else at the line's indent (IntelliJ's
+/// testWrapLongLine).
+fn block_comment_break(line: &str, margin: usize) -> Option<Vec<String>> {
+    let lead = line.len() - line.trim_start().len();
+    let rest = &line[lead..];
+    let (body, prefix) = if rest.starts_with("/**") {
+        (lead + 3, format!("{} * ", &line[..lead]))
+    } else if rest.starts_with("/*") {
+        (lead + 2, line[..lead].to_owned())
+    } else if rest.starts_with('*') && !rest.starts_with("*/") {
+        (lead + 1, format!("{}* ", &line[..lead]))
+    } else {
+        (lead, line[..lead].to_owned())
+    };
+    let mut parts = Vec::new();
+    let mut current = line.to_owned();
+    let mut start = body;
+    while width(&current) > margin {
+        let mut cut = None;
+        for (i, c) in current.char_indices().skip_while(|(i, _)| *i < start) {
+            let after = current[i + 1..].trim();
+            if c == ' ' && width(&current[..=i]) + 1 < margin && !after.is_empty() && after != "*/" && !current[start..i].trim().is_empty() {
+                cut = Some(i);
+            }
+        }
+        let Some(cut) = cut else { break };
+        let next = format!("{prefix}{}", current[cut + 1..].trim_start());
+        current.truncate(cut + 1);
+        parts.push(std::mem::replace(&mut current, next));
+        start = prefix.len();
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    parts.push(current);
+    Some(parts)
 }
 
 /// Ensure right margin is not exceeded: the string literal that crosses
@@ -7923,6 +7986,11 @@ mod tests {
         let o = java(on, 20, t);
         assert!(o.starts_with("class TestClass {\n    //This is a \n    // comment\n"), "{o}");
         assert!(o.contains("            case \"a long label here\":\n"), "{o}");
+        // Block comments and Javadoc (testWrapLongLine's): broken at a space,
+        // the rest at the indent or under a ` * `.
+        let t = "class TestClass {\n    /* Multi line comment that is long enough to exceed right margin*/\n    /** Javadoc comment that is long enough to exceed right margin */\n    /**\n     * Javadoc comment that is long enough to exceed right margin\n     */\n    int a; /* trailing comment after code that is long */\n}\n";
+        assert_eq!(java(Wrapping::JAVA, 50, t), t);
+        assert_eq!(java(on, 50, t), "class TestClass {\n    /* Multi line comment that is long enough \n    to exceed right margin*/\n    /** Javadoc comment that is long enough to \n     * exceed right margin */\n    /**\n     * Javadoc comment that is long enough to \n     * exceed right margin\n     */\n    int a; /* trailing comment after code that is long */\n}\n");
     }
 
     #[test]

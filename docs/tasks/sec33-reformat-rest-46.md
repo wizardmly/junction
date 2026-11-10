@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-46
 title: Reformat：Wrapping and Braces 页剩下的选项（第四十六批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-46
-pr:
+pr: 306
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：Ensure right margin is not exceeded 用在块注释和 Javadoc 上。`reformat_pass` 的缩进循环里，选中的、整行是块注释的行（`State::Block` 开头，或以 `/*` 开头且 `*/` 在行尾）超过右边距时用 `block_comment_break` 断开，前几段直接放进输出（不可再拆），`split_comments` 计入后面重排时的选区增长。断点是最后一个使 `width(前半段含空格) + 1 < margin` 的空格（IntelliJ testWrapLongLine 的 `/*` 一段比边距少两列才断，行注释的 `comment_break` 一起改成这样）。续行前缀：`/**` 行是缩进 + ` * `，`*` 行是缩进 + `* `，其他是原缩进；后半段只剩 `*/` 时不断。测试 `ensures_right_margin_is_not_exceeded`。Signal 语料：默认 5201 行不变，打开时 5324 行、第二遍 0 行。没做：Javadoc 里无星号行补 ` * ` 和 `*/` 另起一行（IntelliJ 的 Javadoc 格式化），剩下的选项放到 sec33-reformat-rest-47。
