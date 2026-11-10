@@ -1415,7 +1415,7 @@ impl SettingsView {
     fn wrap_option(&self, page: gpui_kit::Div, query: &str, label: &'static str, lang: StyleLang, value: Wrap, apply: fn(&mut Wrapping, Wrap), cx: &mut Context<Self>) -> gpui_kit::Div {
         let view = cx.entity();
         // These offer Wrap always too (IntelliJ's WRAP_VALUES).
-        let labels: &'static [&'static str] = if matches!(label, "Record components:" | "Throws list:" | "Throws keyword:" | "Deconstruction list:" | "Annotation parameters:" | "Array initializer:" | "'for()' statement:" | "'try-with-resources':" | "Multi-catch types:") { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
+        let labels: &'static [&'static str] = if matches!(label, "Record components:" | "Throws list:" | "Throws keyword:" | "Deconstruction list:" | "Annotation parameters:" | "Array initializer:" | "'for()' statement:" | "'try-with-resources':" | "Multi-catch types:" | "Extends keyword:" | "'assert' statement:") { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
         let picker = Button::new(SharedString::from(format!("settings-wrap-{label}")))
             .outline()
             .small()
@@ -1750,8 +1750,8 @@ impl SettingsView {
                         continue;
                     }
                     let view = cx.entity();
-                    // Java's arguments, parameters and chained calls offer Wrap always too.
-                    let names: &'static [&'static str] = if lang == StyleLang::Java && i <= 2 { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
+                    // Java's arguments, parameters, chained calls and assignments offer Wrap always too.
+                    let names: &'static [&'static str] = if lang == StyleLang::Java { &Wrap::LABELS_ALWAYS } else { &Wrap::LABELS };
                     let picker = Button::new(SharedString::from(format!("settings-wrap-{}-{i}", lang.name())))
                         .outline()
                         .small()
