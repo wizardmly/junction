@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-37
 title: Reformat：Wrapping and Braces 页剩下的选项（第三十七批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-37
-pr:
+pr: 294
 claimed: 2026-11-10
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-10：这批只做 Java 的 Chained method calls › Builder methods。`CodeStyle::builders` / `set_builders`（逗号、分号、空格分隔），settings.conf 键 `code_style_java_builders`，经 `IndentStyle::builders` 传给格式化；`reformat.rs` 的 `wrap_builder_calls` / `builder_cuts` 是 Java 预处理：链里第二个起的调用（或 Wrap first call 开着且后面还有调用时的第一个）名字在列表里就在 `.` 前断行，续行由缩进器按 Reason::Chain 给续行缩进。只拆一行最外层的链：实参里的链拆开后缩进器给不出对的续行缩进（试过，`.build()` 被缩进到实参那一层），所以不拆。设置页在 Deconstruction list 后面加了输入框。测试 `wraps_builder_methods`。语料：默认 0 行变化；临时把列表设成 append / add / put / build / setTitle 跑，第二遍 0 行。剩下的 Keep builder methods indents 等见 sec33-reformat-rest-38。
