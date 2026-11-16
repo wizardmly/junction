@@ -2,10 +2,10 @@
 id: sec38-breakpoints-group-by-file
 title: Breakpoints 对话框的 Group by File
 features: 第 38 节
-status: claimed
+status: done
 owner: Claude（项目线程）/ 替 Megan 干活
 branch: task/sec38-breakpoints-group-by-file
-pr:
+pr: https://github.com/wizardmly/junction/pull/341
 claimed: 2026-11-16
 files: src/ui/breakpoints_dialog.rs, src/settings.rs, assets/as-icons/src/group-by-file*.svg, src/ui/as_icons_gen.rs
 ---
