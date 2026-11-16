@@ -5,7 +5,7 @@ features: 第 39 节
 status: done
 owner: Claude（项目线程）/ 替 Megan 干活
 branch: task/sec39-drawable-padding
-pr:
+pr: https://github.com/wizardmly/junction/pull/346
 claimed: 2026-11-16
 files: src/domain/drawable.rs, src/domain/nine_patch.rs
 ---
