@@ -409,6 +409,7 @@ impl DebugService {
         let Some((owner, _)) = caller.name.rsplit_once('.') else { return none() };
         let owner = owner.rsplit('.').next().unwrap_or(owner).to_owned();
         let Some(root) = index.read(cx).root().map(Path::to_path_buf) else { return none() };
+        let method_name = method.clone();
         let tree = index.read(cx).method_hierarchy(owner.clone(), method, cx);
         cx.background_spawn(async move {
             use crate::index::hierarchy::{MethodMark, TypeNode};
@@ -425,7 +426,7 @@ impl DebugService {
                         if let (Some(lang), Ok(text)) = (lang, std::fs::read_to_string(&path)) {
                             if let Some(header) = method_header(lang, &text, target.line).filter(|_| abstract_method(lang, &text, target.line).is_none()) {
                                 let source_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                                out.push(Implementation { source_name, package: debugger::package_of(&text), header });
+                                out.push(Implementation { source_name, package: debugger::package_of(&text), header, lambda: false });
                             }
                         }
                     }
@@ -436,6 +437,28 @@ impl DebugService {
             let mut out = Vec::new();
             if let Some(owner) = find(&tree, &owner) {
                 collect(owner, &root, &mut out);
+            }
+            // The lambdas implementing it, as IntelliJ's breakpoint on a
+            // functional interface's method stops in them.
+            use crate::domain::project_files::ProjectFiles as _;
+            use crate::index::method_breakpoint::{lambdas, taking};
+            let files = crate::infra::project_files::DiskFiles { root, repository: None };
+            let texts: Vec<(String, Lang, String)> = files
+                .list()
+                .into_iter()
+                .filter_map(|path| {
+                    let lang = Lang::from_path(&path).filter(|l| matches!(l, Lang::Kotlin | Lang::Java))?;
+                    Some((path.clone(), lang, files.read(&path).ok()?))
+                })
+                .collect();
+            let taking: Vec<(String, usize)> = texts.iter().filter(|(_, _, text)| text.contains(owner.as_str())).flat_map(|(_, lang, text)| taking(*lang, text, &owner)).collect();
+            // A file passing a lambda needn't name the interface.
+            let mentions = |text: &str| text.contains(owner.as_str()) || taking.iter().any(|(name, _)| text.contains(name.as_str()));
+            for (path, lang, text) in texts.iter().filter(|(_, _, text)| mentions(text)) {
+                let source_name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
+                for (line, end) in lambdas(*lang, text, &owner, &taking) {
+                    out.push(Implementation { source_name: source_name.clone(), package: debugger::package_of(text), header: debugger::MethodHeader { name: method_name.clone(), line, end }, lambda: true });
+                }
             }
             out
         })

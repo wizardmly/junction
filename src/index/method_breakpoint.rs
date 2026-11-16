@@ -2,6 +2,8 @@
 //! click on a Kotlin / Java method's declaration line, with no code of the
 //! method on it, sets a method breakpoint instead of a line breakpoint.
 
+use tree_sitter::Node;
+
 use super::extract_method::{children, descendants, is_function};
 use super::lang::Lang;
 use super::symbols;
@@ -99,9 +101,136 @@ fn fields(lang: Lang, text: &str) -> Vec<(String, u32)> {
     .collect()
 }
 
+/// A type's simple name: `Adder` in `Adder`, `a.Adder`, `Adder<T>`, `Adder?`.
+fn simple_type(ty: &str) -> &str {
+    let ty = ty.split('<').next().unwrap_or(ty).trim().trim_end_matches('?');
+    ty.rsplit('.').next().unwrap_or(ty)
+}
+
+/// The functions (and Java constructors) of a file with a parameter of
+/// type `interface`: their names and the parameters' positions, where a
+/// lambda passed implements the interface.
+pub fn taking(lang: Lang, text: &str, interface: &str) -> Vec<(String, usize)> {
+    let Some(tree) = symbols::parse(lang, text) else { return Vec::new() };
+    let mut out = Vec::new();
+    for function in descendants(tree.root_node()).into_iter().filter(|n| is_function(lang, *n)) {
+        let (name, types): (Option<Node>, Vec<String>) = match lang {
+            Lang::Kotlin => (
+                children(function).into_iter().find(|c| c.kind() == "simple_identifier"),
+                children(function)
+                    .into_iter()
+                    .find(|c| c.kind() == "function_value_parameters")
+                    .map(|ps| children(ps).into_iter().filter(|p| p.kind() == "parameter").map(|p| children(p).last().map(|t| text[t.byte_range()].to_owned()).unwrap_or_default()).collect())
+                    .unwrap_or_default(),
+            ),
+            _ => (
+                function.child_by_field_name("name"),
+                function
+                    .child_by_field_name("parameters")
+                    .map(|ps| children(ps).into_iter().filter(|p| p.kind() == "formal_parameter").map(|p| p.child_by_field_name("type").map(|t| text[t.byte_range()].to_owned()).unwrap_or_default()).collect())
+                    .unwrap_or_default(),
+            ),
+        };
+        let Some(name) = name else { continue };
+        for (i, ty) in types.iter().enumerate() {
+            if simple_type(ty) == interface {
+                out.push((text[name.byte_range()].to_owned(), i));
+            }
+        }
+    }
+    out
+}
+
+/// The lambdas of a file implementing `interface`, as far as the syntax
+/// tells (IntelliJ's functional expression search): the value of a
+/// variable, field or cast of that type, returned from a function
+/// returning it, a Kotlin SAM constructor `Adder { … }`, or passed where
+/// `taking` (from [`taking`] over the project) says a parameter has the
+/// type. Their 1-based first and last lines.
+pub fn lambdas(lang: Lang, text: &str, interface: &str, taking: &[(String, usize)]) -> Vec<(u32, u32)> {
+    let Some(tree) = symbols::parse(lang, text) else { return Vec::new() };
+    let named = |n: Node| text[n.byte_range()].to_owned();
+    let passed = |name: &str, i: usize| taking.iter().any(|(n, at)| n == name && *at == i);
+    let is_type = |ty: Option<Node>| ty.is_some_and(|t| simple_type(&text[t.byte_range()]) == interface);
+    let lines = |n: Node| (n.start_position().row as u32 + 1, n.end_position().row as u32 + 1);
+    let mut out = Vec::new();
+    for lambda in descendants(tree.root_node()) {
+        let implements = match (lang, lambda.kind()) {
+            (Lang::Java, "lambda_expression") => {
+                let mut at = lambda;
+                while let Some(p) = at.parent().filter(|p| p.kind() == "parenthesized_expression") {
+                    at = p;
+                }
+                let Some(parent) = at.parent() else { continue };
+                match parent.kind() {
+                    "variable_declarator" => is_type(parent.parent().and_then(|d| d.child_by_field_name("type"))),
+                    "cast_expression" => is_type(parent.child_by_field_name("type")),
+                    "return_statement" => {
+                        let mut p = parent.parent();
+                        while let Some(x) = p.filter(|x| !matches!(x.kind(), "method_declaration" | "lambda_expression")) {
+                            p = x.parent();
+                        }
+                        is_type(p.filter(|x| x.kind() == "method_declaration").and_then(|m| m.child_by_field_name("type")))
+                    }
+                    "argument_list" => {
+                        let i = children(parent).into_iter().filter(|c| c.is_named() && !c.kind().ends_with("comment")).position(|c| c.id() == at.id()).unwrap_or(usize::MAX);
+                        parent.parent().is_some_and(|call| match call.kind() {
+                            "method_invocation" => call.child_by_field_name("name").is_some_and(|n| passed(&named(n), i)),
+                            "object_creation_expression" => call.child_by_field_name("type").is_some_and(|t| passed(simple_type(&text[t.byte_range()]), i)),
+                            _ => false,
+                        })
+                    }
+                    _ => false,
+                }
+            }
+            (Lang::Kotlin, "lambda_literal") => {
+                let Some(parent) = lambda.parent() else { continue };
+                // `f(…) { … }` or `Adder { … }`: the call and the lambda's position.
+                let (suffix, i) = match parent.kind() {
+                    "annotated_lambda" => {
+                        let Some(suffix) = parent.parent().filter(|s| s.kind() == "call_suffix") else { continue };
+                        let before = children(suffix).into_iter().find(|c| c.kind() == "value_arguments").map_or(0, |a| children(a).into_iter().filter(|c| c.kind() == "value_argument").count());
+                        (suffix, before)
+                    }
+                    "value_argument" => {
+                        let Some(arguments) = parent.parent() else { continue };
+                        let Some(suffix) = arguments.parent().filter(|s| s.kind() == "call_suffix") else { continue };
+                        (suffix, children(arguments).into_iter().filter(|c| c.kind() == "value_argument").position(|c| c.id() == parent.id()).unwrap_or(usize::MAX))
+                    }
+                    _ => continue,
+                };
+                let Some(callee) = suffix.parent().filter(|c| c.kind() == "call_expression").and_then(|c| c.child(0)) else { continue };
+                // `x.f { … }`: the name after the last dot.
+                let name = match callee.kind() {
+                    "navigation_expression" => descendants(callee).into_iter().filter(|n| n.kind() == "simple_identifier").last().map(named).unwrap_or_default(),
+                    _ => named(callee),
+                };
+                (name == interface && parent.kind() == "annotated_lambda") || passed(&name, i)
+            }
+            _ => false,
+        };
+        if implements {
+            out.push(lines(lambda));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_lambdas_implementing_an_interface() {
+        let java = "class Main {\n  static int run(int x, Adder op) { return op.add(x, 1); }\n  Adder field = (a, b) -> a + b;\n  static Adder make() {\n    return (a, b) -> {\n      return a * b;\n    };\n  }\n  void m() {\n    Adder local = ((a, b) -> a - b);\n    Runnable r = () -> {};\n    run(2, (a, b) -> a);\n    run((a, b) -> b, 3);\n    Object o = (Adder) (a, b) -> 0;\n  }\n}\n";
+        let taking = taking(Lang::Java, java, "Adder");
+        assert_eq!(taking, [("run".to_owned(), 1)]);
+        assert_eq!(lambdas(Lang::Java, java, "Adder", &taking), [(3, 3), (5, 7), (10, 10), (12, 12), (14, 14)]);
+        let kt = "fun interface Adder { fun add(a: Int, b: Int): Int }\nfun twice(x: Int, op: Adder?) = op?.add(x, x)\nfun main() {\n    val a = Adder { x, y -> x + y }\n    twice(1) { x, y ->\n        x * y\n    }\n    calc.twice(1, { x, _ -> x })\n    listOf(1).map { it }\n    twice({ x, _ -> x }, 1)\n}\n";
+        let taking = super::taking(Lang::Kotlin, kt, "Adder");
+        assert_eq!(taking, [("twice".to_owned(), 1)]);
+        assert_eq!(lambdas(Lang::Kotlin, kt, "Adder", &taking), [(4, 4), (5, 7), (8, 8)]);
+    }
 
     #[test]
     fn finds_declaration_lines() {

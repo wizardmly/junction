@@ -71,6 +71,8 @@ pub struct Implementation {
     pub source_name: String,
     pub package: String,
     pub header: MethodHeader,
+    /// A lambda implementing it (`header` its lines, named as the method).
+    pub lambda: bool,
 }
 
 impl LineBreakpoint {
@@ -453,7 +455,11 @@ impl DebugSession {
         let mut requests = Vec::new();
         for implementation in breakpoint.implementations.iter().filter(|i| source.as_deref() == Some(i.source_name.as_str())) {
             let methods = self.vm.methods(class)?;
-            requests.extend(self.place_method(class, &methods, &implementation.header, breakpoint)?);
+            if implementation.lambda {
+                requests.extend(self.place_entries(class, crate::domain::debugger::lambda_entries(class, &methods, &implementation.header), breakpoint)?);
+            } else {
+                requests.extend(self.place_method(class, &methods, &implementation.header, breakpoint)?);
+            }
         }
         if source.as_deref() != Some(breakpoint.source_name.as_str()) {
             return Ok(requests);
@@ -1224,7 +1230,7 @@ mod tests {
         let session = DebugSession::new(vm.clone());
         let mut iface = LineBreakpoint::new(Path::new("/p/src/main/java/b/Shape.java"), "b".into(), 3);
         iface.method = Some(MethodHeader { name: "m1".into(), line: 3, end: 3 });
-        iface.implementations = vec![Implementation { source_name: "CalcTest.java".into(), package: "a".into(), header: MethodHeader { name: "m1".into(), line: 4, end: 5 } }];
+        iface.implementations = vec![Implementation { source_name: "CalcTest.java".into(), package: "a".into(), header: MethodHeader { name: "m1".into(), line: 4, end: 5 }, lambda: false }];
         // Both packages watched.
         assert_eq!(session.add_breakpoint(iface), Ok(false));
         assert_eq!(vm.take_log(), ["watch b.*", "watch a.*"]);
