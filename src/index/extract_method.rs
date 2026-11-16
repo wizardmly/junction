@@ -507,6 +507,18 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<MethodPla
         }
         _ => String::new(),
     };
+    // `this@<function>` names the new function's receiver as `this@<new name>`.
+    let receiver_labels = if receiver.is_empty() {
+        Vec::new()
+    } else {
+        let name = children(function).into_iter().find(|c| c.kind() == "simple_identifier").map(|c| &text[c.byte_range()]).unwrap_or("");
+        let label = format!("this@{name}");
+        descendants(function)
+            .into_iter()
+            .filter(|n| n.kind() == "this_expression" && inside(&n.byte_range(), &range) && text[n.byte_range()] == label)
+            .map(|n| n.start_byte() + 5 - range.start..n.end_byte() - range.start)
+            .collect()
+    };
     Ok(MethodPlan {
         range,
         expression,
@@ -521,6 +533,7 @@ pub fn plan(lang: Lang, text: &str, selection: Range<usize>) -> Result<MethodPla
         type_parameters,
         type_constraints,
         receiver,
+        receiver_labels,
     })
 }
 
@@ -896,6 +909,11 @@ mod tests {
         assert!(out.contains("    val x = g(i)\n") && out.contains("private fun <T> List<T>.g(i: Int): T {\n    val x: T = this[i]\n    return x\n}"), "{out}");
         let text = "fun String.shout(n: Int) {\n    val t = uppercase()\n    println(t + n)\n}\n";
         assert_eq!(run(Lang::Kotlin, text, "val t", "+ n)").0, "private fun String.g(n: Int)");
+        // `this@<function>` (a nested lambda's own `this` aside) names the new function.
+        let text = "fun String.shout(n: Int) {\n    val t: String = with(n) { this@shout.repeat(this) }\n    println(t)\n}\n";
+        let (sig, out) = run(Lang::Kotlin, text, "val t", "println(t)");
+        assert_eq!(sig, "private fun String.g(n: Int)");
+        assert!(out.contains("    val t: String = with(n) { this@g.repeat(this) }\n") && !out.contains("this@shout.repeat"), "{out}");
         // Code not using it stays a plain function.
         let text = "fun String.shout(n: Int) {\n    val m: Int = n * 2\n    println(m)\n    println(this + m)\n}\n";
         assert_eq!(run(Lang::Kotlin, text, "val m", "println(m)").0, "private fun g(n: Int): Int");

@@ -73,6 +73,9 @@ pub struct MethodPlan {
     /// Kotlin: the enclosing extension function's receiver type, which
     /// the new function keeps (the call's implicit `this` is the same).
     pub receiver: String,
+    /// Kotlin: where the code names the enclosing function as `this@<name>`
+    /// (the label, relative to the code), renamed to the new function.
+    pub receiver_labels: Vec<Range<usize>>,
 }
 
 impl MethodPlan {
@@ -241,6 +244,7 @@ pub fn extract(style: ImportStyle, text: &str, plan: &MethodPlan, request: &Extr
             renames.extend(p.uses.iter().map(|u| (u.clone(), name.as_str())));
         }
     }
+    renames.extend(plan.receiver_labels.iter().map(|r| (r.clone(), request.name.as_str())));
     renames.sort_by_key(|(r, _)| std::cmp::Reverse(r.start));
     for (r, name) in renames {
         code.replace_range(r, name);
@@ -365,6 +369,7 @@ mod tests {
             type_parameters: vec![],
             type_constraints: vec![],
             receiver: String::new(),
+            receiver_labels: Vec::new(),
         };
         assert_eq!(plan.suggested_name(), "extracted");
         let e = extract(ImportStyle::Kotlin, text, &plan, &request("twice", &[("count", "Int")], ""), "    ", &[]).unwrap();
@@ -395,6 +400,7 @@ mod tests {
             type_parameters: vec![],
             type_constraints: vec![],
             receiver: String::new(),
+            receiver_labels: Vec::new(),
         };
         assert_eq!(plan.suggested_name(), "extracted1");
         assert!(!plan.needs_result_type(ImportStyle::Kotlin) && plan.needs_result_type(ImportStyle::Java));
@@ -417,6 +423,7 @@ mod tests {
             type_parameters: vec![],
             type_constraints: vec![],
             receiver: String::new(),
+            receiver_labels: Vec::new(),
         };
         let mut r = request("compute", &[("n", "int")], "");
         r.is_static = true;
@@ -440,6 +447,7 @@ mod tests {
             type_parameters: vec![],
             type_constraints: vec![],
             receiver: String::new(),
+            receiver_labels: Vec::new(),
         };
         let e = extract(ImportStyle::Kotlin, text, &plan, &request("add", &[("s", "Int")], ""), "    ", &[]).unwrap();
         assert_eq!(apply(text, &e), "fun f() {\n    var s = 0\n    s = add(s)\n    println(s)\n}\n\nprivate fun add(s: Int): Int {\n    var s = s\n    s += 2\n    return s\n}\n");
@@ -469,6 +477,7 @@ mod tests {
             type_parameters: vec![],
             type_constraints: vec![],
             receiver: String::new(),
+            receiver_labels: Vec::new(),
         };
         let mut r = request("sub", &[("x", "Int"), ("y", "Long")], "");
         r.order = vec![1, 0];
