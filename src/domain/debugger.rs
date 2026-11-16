@@ -305,6 +305,25 @@ pub fn method_entries(class: u64, methods: &[MethodInfo], header: &MethodHeader)
         .collect()
 }
 
+/// Where a lambda implementing an interface's method starts: the method
+/// the compiler made of it (javac's `lambda$main$0`, Kotlin's
+/// `main$lambda$0`, or `add` in the class Kotlin 1.x makes of it) whose
+/// code starts on the lambda's lines (`header`), the outermost when
+/// lambdas nest there.
+pub fn lambda_entries(class: u64, methods: &[MethodInfo], header: &MethodHeader) -> Vec<Location> {
+    let named = |n: &str| n.starts_with("lambda$") || n.contains("$lambda") || n == header.name;
+    let found: Vec<(u32, Location)> = methods
+        .iter()
+        .filter(|m| named(&m.name))
+        .filter_map(|m| {
+            let first = m.lines.iter().map(|(_, l)| *l).min()?;
+            (header.line..=header.end).contains(&first).then(|| (first, Location { class, method: m.id, index: m.lines.iter().map(|(ix, _)| *ix).min().unwrap_or(0) }))
+        })
+        .collect();
+    let outermost = found.iter().map(|(l, _)| *l).min();
+    found.into_iter().filter(|(l, _)| Some(*l) == outermost).map(|(_, at)| at).collect()
+}
+
 /// A field watchpoint's field, from its declaration, and what it stops on
 /// (IntelliJ's Field access / Field modification).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -558,6 +577,22 @@ mod tests {
         methods[1].name = "total".into();
         methods[2].name = "total$default".into();
         assert_eq!(method_entries(7, &methods, &header), [Location { class: 7, method: 1, index: 0 }]);
+    }
+
+    #[test]
+    fn lambda_breakpoints_stop_in_the_outermost_lambda_on_its_lines() {
+        let header = MethodHeader { name: "add".into(), line: 5, end: 7 };
+        let named = |id: u64, name: &str, lines: &[(u64, u32)]| MethodInfo { name: name.into(), ..method(id, lines) };
+        let methods = vec![
+            named(1, "main", &[(0, 4), (3, 5), (9, 8)]),
+            named(2, "lambda$main$0", &[(0, 6), (2, 7)]),
+            named(3, "lambda$main$1", &[(0, 7)]),
+            named(4, "lambda$main$2", &[(0, 12)]),
+        ];
+        assert_eq!(lambda_entries(7, &methods, &header), [Location { class: 7, method: 2, index: 0 }]);
+        // Kotlin's: `main$lambda$0`, or `add` in a class of its own.
+        let methods = vec![named(1, "main$lambda$0", &[(0, 5)]), named(2, "add", &[(0, 5)])];
+        assert_eq!(lambda_entries(7, &methods, &header).len(), 2);
     }
 
     #[test]
