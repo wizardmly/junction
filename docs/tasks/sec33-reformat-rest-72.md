@@ -2,10 +2,10 @@
 id: sec33-reformat-rest-72
 title: Reformat：Wrapping and Braces 页剩下的选项（第七十二批）
 features: 第 33 节
-status: claimed
+status: done
 owner: Claude Code / Jake
 branch: task/sec33-reformat-rest-72
-pr:
+pr: 340
 claimed: 2026-11-16
 files: src/domain/reformat.rs, src/domain/code_style.rs, src/ui/settings_dialog.rs
 ---
@@ -22,4 +22,4 @@ IntelliJ 源码：容器里 /home/claude/jetbrains/intellij-community 是稀疏�
 
 ## 进度
 
-（认领后在这里按日期记：做了什么、卡在哪、下一步。）
+- 2026-11-16：`Wrapping::javadoc_layout` 扩到 `[bool; 14]`，加 Wrap at right margin（WRAP_COMMENTS）和 Preserve line feeds（JD_PRESERVE_LINE_FEEDS），Java 默认都关，settings.conf 第 130–131 位。`javadoc_layout` 多了 `margin` 参数，在对齐、加空行之后调新函数 `reflow_javadoc`：分段（描述、每个标签各一段，空行 / 标签 / HTML 标签开头的行 / `<pre>` 断开），段内各行合并（Preserve line feeds 时每行单独一段），再用 `wrap_javadoc_text`（照 `toArrayWrapping` + `computeWrapPosition`：优先在 `{@…}` 外的空格断，找不到就在任意空格断，太长的单词留着超出）按 `右边距 - (星号缩进 + 2)` 折行。标签的头（`@param name` 加对齐空格）不拆；对齐打开的 `@param` / `@throws` 续行缩进到描述列，其他续行不缩进；非标签行自己的前导缩进保留。踩过的坑：断点取“≤ 宽度”时会切出正好等于宽度的行，第二遍又拆，改成“< 宽度”；HTML 行带前导空格时第一遍保留、第二遍 trim 掉，改成前导缩进算进头部。测试在 `lays_out_javadoc_tags`。Signal 语料：默认 5417 行不变；打开 Wrap 5902 行、再开 Preserve 5492 行，第二遍都 0 行。剩下的放到 sec33-reformat-rest-73。
