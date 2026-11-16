@@ -295,9 +295,16 @@ impl Writer<'_, '_> {
             }
             "layer-list" | "ripple" | "transition" => {
                 let mut size: Option<(f32, f32)> = None;
+                // The earlier layers' padding nests the later ones (LayerDrawable).
+                let nest = !stacked(node);
+                let mut pad = NO_PAD;
                 for item in layers(node) {
                     let inset = |name| self.dimen(attr(item, name)).unwrap_or(0.);
-                    let (l, t, r, b) = (inset("left"), inset("top"), inset("right"), inset("bottom"));
+                    let (l, t, r, b) = (inset("left") + pad[0], inset("top") + pad[1], inset("right") + pad[2], inset("bottom") + pad[3]);
+                    if nest {
+                        let p = self.item_padding(item, text);
+                        pad = std::array::from_fn(|i| pad[i] + p[i]);
+                    }
                     let own = match (self.dimen(attr(item, "width")), self.dimen(attr(item, "height"))) {
                         (Some(w), Some(h)) => Some((w, h)),
                         _ => self.item_intrinsic(item, text),
@@ -328,6 +335,71 @@ impl Writer<'_, '_> {
                 Some((w + side("insetLeft") + side("insetRight"), h + side("insetTop") + side("insetBottom")))
             }
             _ => None,
+        }
+    }
+
+    /// A drawable's content padding (left, top, right, bottom) in dp, as
+    /// `Drawable.getPadding` gives it: a shape's `<padding>`, a nine-patch's,
+    /// an inset's insets plus its child's, a layer list's layers' (summed,
+    /// or the largest for `paddingMode="stack"` and a ripple), a selector's
+    /// largest of its items' (DrawableContainer's constant padding).
+    fn padding(&mut self, node: Node, text: &str) -> Pad {
+        match node.tag_name().name() {
+            "shape" => node.children().find(|n| n.has_tag_name("padding")).map_or(NO_PAD, |p| {
+                let side = |name| self.dimen(attr(p, name)).unwrap_or(0.);
+                [side("left"), side("top"), side("right"), side("bottom")]
+            }),
+            "bitmap" | "nine-patch" => self.source(node).map_or(NO_PAD, |b| bitmap_padding(&b)),
+            "inset" => {
+                let all = self.dimen(attr(node, "inset")).unwrap_or(0.);
+                let side = |name| self.dimen(attr(node, name)).unwrap_or(all);
+                let insets = [side("insetLeft"), side("insetTop"), side("insetRight"), side("insetBottom")];
+                let child = match attr(node, "drawable") {
+                    Some(r) => self.reference_padding(r),
+                    None => node.children().find(|n| n.is_element()).map_or(NO_PAD, |c| self.padding(c, text)),
+                };
+                std::array::from_fn(|i| insets[i] + child[i])
+            }
+            "layer-list" | "ripple" | "transition" => {
+                let stack = stacked(node);
+                let mut pad = NO_PAD;
+                for item in layers(node) {
+                    let p = self.item_padding(item, text);
+                    pad = std::array::from_fn(|i| if stack { pad[i].max(p[i]) } else { pad[i] + p[i] });
+                }
+                pad
+            }
+            "selector" | "level-list" | "animated-selector" | "animation-list" => {
+                let items: Vec<Node> = node.children().filter(|n| n.has_tag_name("item")).collect();
+                let mut pad = NO_PAD;
+                for item in items {
+                    let p = self.item_padding(item, text);
+                    pad = std::array::from_fn(|i| pad[i].max(p[i]));
+                }
+                pad
+            }
+            "rotate" | "scale" | "clip" => self.item_padding(node, text),
+            _ => NO_PAD,
+        }
+    }
+
+    fn reference_padding(&mut self, reference: &str) -> Pad {
+        let color = !reference.starts_with("@drawable") && !reference.starts_with("@mipmap") && self.color(Some(reference)).is_some();
+        if color || self.depth > 8 {
+            return NO_PAD;
+        }
+        let Some(text) = (self.lookup.drawable)(reference) else { return (self.lookup.bitmap)(reference).map_or(NO_PAD, |b| bitmap_padding(&b)) };
+        let Ok(doc) = roxmltree::Document::parse(&text) else { return NO_PAD };
+        self.depth += 1;
+        let pad = self.padding(doc.root_element(), &text);
+        self.depth -= 1;
+        pad
+    }
+
+    fn item_padding(&mut self, item: Node, text: &str) -> Pad {
+        match attr(item, "drawable") {
+            Some(r) => self.reference_padding(r),
+            None => item.children().find(|n| n.is_element()).map_or(NO_PAD, |c| self.padding(c, text)),
         }
     }
 
@@ -382,9 +454,17 @@ impl Writer<'_, '_> {
                 }
             }
             "layer-list" | "ripple" | "transition" => {
+                // Each layer inside the earlier layers' padding, unless they
+                // stack (a ripple's default).
+                let nest = !stacked(node);
+                let mut pad = NO_PAD;
                 for item in layers(node) {
                     let inset = |name| self.dimen(attr(item, name)).unwrap_or(0.);
-                    let (l, t, r, b) = (inset("left"), inset("top"), inset("right"), inset("bottom"));
+                    let (l, t, r, b) = (inset("left") + pad[0], inset("top") + pad[1], inset("right") + pad[2], inset("bottom") + pad[3]);
+                    if nest {
+                        let p = self.item_padding(item, text);
+                        pad = std::array::from_fn(|i| pad[i] + p[i]);
+                    }
                     let (x, y, w, h) = (rect.0 + l, rect.1 + t, (rect.2 - l - r).max(0.), (rect.3 - t - b).max(0.));
                     // An item with a size sits by its gravity; without one
                     // on an axis, at the start / top (LayerDrawable).
@@ -728,6 +808,27 @@ impl Writer<'_, '_> {
 }
 
 /// An `<animated-vector>`'s inline drawable: `<aapt:attr name="android:drawable">`.
+/// Padding: left, top, right, bottom (dp).
+type Pad = [f32; 4];
+const NO_PAD: Pad = [0.; 4];
+
+/// A layer list whose layers' padding doesn't nest: `paddingMode="stack"`,
+/// a ripple's default (RippleDrawable).
+fn stacked(node: Node) -> bool {
+    match attr(node, "paddingMode") {
+        Some(mode) => mode == "stack",
+        None => node.has_tag_name("ripple"),
+    }
+}
+
+/// A nine-patch's padding in dp; none for other images.
+fn bitmap_padding(bitmap: &Bitmap) -> Pad {
+    if !bitmap.nine_patch {
+        return NO_PAD;
+    }
+    crate::domain::nine_patch::regions(&bitmap.bytes).map_or(NO_PAD, |r| r.padding.map(|p| p as f32 / bitmap.density))
+}
+
 fn inline_drawable<'n>(node: Node<'n, 'n>) -> Option<Node<'n, 'n>> {
     node.children().find(|c| c.tag_name().name() == "attr" && c.attribute("name") == Some("android:drawable"))?.children().find(|n| n.is_element())
 }
@@ -885,6 +986,32 @@ mod tests {
         b.extend(h.to_be_bytes());
         b.extend([8, 6, 0, 0, 0]);
         b
+    }
+
+    #[test]
+    fn nests_layers_in_the_padding_of_earlier_ones() {
+        let shape = "<shape android:shape=\"rectangle\"><size android:width=\"40dp\" android:height=\"20dp\"/><padding android:left=\"4dp\" android:top=\"2dp\" android:right=\"6dp\" android:bottom=\"8dp\"/><solid android:color=\"#ff0000\"/></shape>";
+        // A layer list: the second layer inside the first one's padding, the size grown by it.
+        let image = render_with(&format!("<layer-list {NS}><item>{shape}</item><item><shape><size android:width=\"40dp\" android:height=\"20dp\"/><solid android:color=\"#00ff00\"/></shape></item></layer-list>"), &[]).unwrap();
+        assert_eq!((image.width, image.height), (50., 30.));
+        assert!(image.svg.contains("x=\"4\" y=\"2\" width=\"40\" height=\"20\""), "{}", image.svg);
+        // `paddingMode="stack"` and a ripple don't nest.
+        let image = render_with(&format!("<layer-list {NS} android:paddingMode=\"stack\"><item>{shape}</item><item><color android:color=\"#00ff00\"/></item></layer-list>"), &[]).unwrap();
+        assert!(image.svg.contains("<rect x=\"0\" y=\"0\" width=\"40\" height=\"20\" fill=\"#00ff00\""), "{}", image.svg);
+        let image = render_with(&format!("<ripple {NS} android:color=\"#80000000\"><item>{shape}</item><item><color android:color=\"#00ff00\"/></item></ripple>"), &[]).unwrap();
+        assert!(image.svg.contains("<rect x=\"0\" y=\"0\" width=\"40\" height=\"20\" fill=\"#00ff00\""), "{}", image.svg);
+        // An inset adds its insets; a nine-patch has its own padding.
+        let color = |_: &str| None;
+        let value = |_: &str| None;
+        let drawable = |_: &str| None;
+        let bitmap = |_: &str| Some(Bitmap { bytes: crate::domain::nine_patch::tests::nine(), density: 1., nine_patch: true });
+        let lookup = Lookup { color: &color, value: &value, drawable: &drawable, bitmap: &bitmap };
+        let mut w = Writer { lookup: &lookup, ids: 0, depth: 0 };
+        let text = format!("<inset {NS} android:insetLeft=\"5dp\"><nine-patch android:src=\"@drawable/frame\"/></inset>");
+        let doc = roxmltree::Document::parse(&text).unwrap();
+        assert_eq!(w.padding(doc.root_element(), &text), [8., 2., 3., 2.]);
+        let image = render(&format!("<layer-list {NS}><item><nine-patch android:src=\"@drawable/frame\"/></item><item><color android:color=\"#00ff00\"/></item></layer-list>"), 1., &lookup).unwrap();
+        assert!(image.svg.contains("<rect x=\"3\" y=\"2\" width=\"4\" height=\"2\" fill=\"#00ff00\""), "{}", image.svg);
     }
 
     #[test]

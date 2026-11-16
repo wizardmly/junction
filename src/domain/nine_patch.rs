@@ -12,6 +12,10 @@ use std::ops::Range;
 pub struct Regions {
     pub columns: Vec<Range<u32>>,
     pub rows: Vec<Range<u32>>,
+    /// The content padding (left, top, right, bottom), in pixels: from the
+    /// bottom and right edges' marks, else the first stretchable column /
+    /// row (as aapt compiles it).
+    pub padding: [u32; 4],
 }
 
 /// One piece of the image placed in the bounds: from `source` (pixels of
@@ -46,7 +50,14 @@ pub fn regions(png: &[u8]) -> Option<Regions> {
     };
     let columns = runs(w, &|x| black(x, 0));
     let rows = runs(h, &|y| black(0, y));
-    Some(Regions { columns, rows })
+    let (iw, ih) = (w - 2, h - 2);
+    let side = |marks: Vec<Range<u32>>, stretch: &[Range<u32>], size: u32| match marks.first().or(stretch.first()) {
+        Some(r) => (r.start, size - r.end),
+        None => (0, 0),
+    };
+    let (left, right) = side(runs(w, &|x| black(x, h - 1)), &columns, iw);
+    let (top, bottom) = side(runs(h, &|y| black(w - 1, y)), &rows, ih);
+    Some(Regions { columns, rows, padding: [left, top, right, bottom] })
 }
 
 /// How one axis of `size` pixels (inside the border) fills `target` dp:
@@ -246,7 +257,15 @@ pub(crate) mod tests {
         let (w, h, rgba) = decode(&nine()).unwrap();
         assert_eq!((w, h), (12, 8));
         assert_eq!(&rgba[(2 * 12 + 5) * 4..(2 * 12 + 5) * 4 + 4], &[100, 60, 100, 255]);
-        assert_eq!(regions(&nine()), Some(Regions { columns: vec![3..7], rows: vec![2..4] }));
+        // No padding marks: the stretchable column and row.
+        assert_eq!(regions(&nine()), Some(Regions { columns: vec![3..7], rows: vec![2..4], padding: [3, 2, 3, 2] }));
+        // Marks on the bottom (columns 2..9 inside) and right (row 1) edges.
+        let padded = png(12, 8, |x, y| match (x, y) {
+            (4..=7, 0) | (0, 3..=4) | (3..=9, 7) | (11, 2) => [0, 0, 0, 255],
+            (0, _) | (11, _) | (_, 0) | (_, 7) => [0, 0, 0, 0],
+            _ => [255, 255, 255, 255],
+        });
+        assert_eq!(regions(&padded).map(|r| r.padding), Some([2, 1, 1, 4]));
     }
 
     #[test]
