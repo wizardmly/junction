@@ -5,7 +5,7 @@ features: 第 40 节
 status: done
 owner: Claude（项目线程）/ 替 Megan 干活
 branch: task/sec40-extract-skip-parameter
-pr:
+pr: https://github.com/wizardmly/junction/pull/347
 claimed: 2026-11-16
 files: src/domain/extract_method.rs, src/ui/extract_method_dialog.rs, src/ui/file_editor.rs, src/index/extract_method.rs
 ---
