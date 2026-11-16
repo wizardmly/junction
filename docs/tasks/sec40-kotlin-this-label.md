@@ -5,7 +5,7 @@ features: 第 40 节
 status: done
 owner: Claude（项目线程）/ 替 Megan 干活
 branch: task/sec40-kotlin-this-label
-pr:
+pr: https://github.com/wizardmly/junction/pull/343
 claimed: 2026-11-16
 files: src/index/extract_method.rs, src/domain/extract_method.rs
 ---
