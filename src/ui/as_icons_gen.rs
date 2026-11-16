@@ -152,6 +152,7 @@ pub const GRADLE_KOTLIN: AsIcon = AsIcon { light: &[("as/gradle-kotlin.l0.svg", 
 pub const GREEN_CHECKMARK: AsIcon = AsIcon { light: &[("as/green-checkmark.l0.svg", 0x369650ff)], dark: &[("as/green-checkmark.d0.svg", 0x57965cff)] };
 pub const GRID: AsIcon = AsIcon { light: &[("as/grid.l0.svg", 0x6c707eff)], dark: &[("as/grid.d0.svg", 0xced0d6ff)] };
 pub const GROUP: AsIcon = AsIcon { light: &[("as/group.l0.svg", 0x6c707eff)], dark: &[("as/group.d0.svg", 0xced0d6ff)] };
+pub const GROUP_BY_FILE: AsIcon = AsIcon { light: &[("as/group-by-file.l0.svg", 0x6c707eff), ("as/group-by-file.l1.svg", 0xebecf0ff), ("as/group-by-file.l2.svg", 0x6c707eff)], dark: &[("as/group-by-file.d0.svg", 0xced0d6ff), ("as/group-by-file.d1.svg", 0x43454aff), ("as/group-by-file.d2.svg", 0xced0d6ff)] };
 pub const GROUP_BY_MODULE: AsIcon = AsIcon { light: &[("as/group-by-module.l0.svg", 0x6c707eff), ("as/group-by-module.l1.svg", 0xedf3ffff), ("as/group-by-module.l2.svg", 0x3574f0ff)], dark: &[("as/group-by-module.d0.svg", 0xced0d6ff), ("as/group-by-module.d1.svg", 0x25324dff), ("as/group-by-module.d2.svg", 0x548af7ff)] };
 pub const GROUP_BY_PACKAGE: AsIcon = AsIcon { light: &[("as/group-by-package.l0.svg", 0x6c707eff), ("as/group-by-package.l1.svg", 0xebecf0ff), ("as/group-by-package.l2.svg", 0x6c707eff)], dark: &[("as/group-by-package.d0.svg", 0xced0d6ff), ("as/group-by-package.d1.svg", 0x43454aff), ("as/group-by-package.d2.svg", 0xced0d6ff)] };
 pub const GUTTER_IMPLEMENTED_METHOD: AsIcon = AsIcon { light: &[("as/gutter-implemented-method.l0.svg", 0xf2fcf3ff), ("as/gutter-implemented-method.l1.svg", 0x208a3cff), ("as/gutter-implemented-method.l2.svg", 0x6c707eff), ("as/gutter-implemented-method.l3.svg", 0x208a3cff)], dark: &[("as/gutter-implemented-method.d0.svg", 0x253627ff), ("as/gutter-implemented-method.d1.svg", 0x57965cff), ("as/gutter-implemented-method.d2.svg", 0xced0d6ff), ("as/gutter-implemented-method.d3.svg", 0x57965cff)] };
@@ -797,6 +798,12 @@ pub static FILES: &[(&str, &[u8])] = &[
     ("as/grid.d0.svg", include_bytes!("../../assets/as-icons/gen/grid.d0.svg")),
     ("as/group.l0.svg", include_bytes!("../../assets/as-icons/gen/group.l0.svg")),
     ("as/group.d0.svg", include_bytes!("../../assets/as-icons/gen/group.d0.svg")),
+    ("as/group-by-file.l0.svg", include_bytes!("../../assets/as-icons/gen/group-by-file.l0.svg")),
+    ("as/group-by-file.l1.svg", include_bytes!("../../assets/as-icons/gen/group-by-file.l1.svg")),
+    ("as/group-by-file.l2.svg", include_bytes!("../../assets/as-icons/gen/group-by-file.l2.svg")),
+    ("as/group-by-file.d0.svg", include_bytes!("../../assets/as-icons/gen/group-by-file.d0.svg")),
+    ("as/group-by-file.d1.svg", include_bytes!("../../assets/as-icons/gen/group-by-file.d1.svg")),
+    ("as/group-by-file.d2.svg", include_bytes!("../../assets/as-icons/gen/group-by-file.d2.svg")),
     ("as/group-by-module.l0.svg", include_bytes!("../../assets/as-icons/gen/group-by-module.l0.svg")),
     ("as/group-by-module.l1.svg", include_bytes!("../../assets/as-icons/gen/group-by-module.l1.svg")),
     ("as/group-by-module.l2.svg", include_bytes!("../../assets/as-icons/gen/group-by-module.l2.svg")),

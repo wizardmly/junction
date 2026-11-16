@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::{
-    Disableable as _, Icon, Sizable as _, WindowExt as _, h_flex,
+    Disableable as _, Icon, Selectable as _, Sizable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     dialog::{DialogAction, DialogFooter},
@@ -37,6 +37,45 @@ fn group(b: &SavedBreakpoint) -> &'static str {
         (true, false, false) => "Java Line Breakpoints",
         (false, false, false) => "Kotlin Line Breakpoints",
     }
+}
+
+/// A row of the list: a type group's header, a file's (Group by File),
+/// or the entry at an index.
+#[derive(Debug, PartialEq, Eq)]
+enum Row<'a> {
+    Group(&'static str),
+    File(&'a str),
+    Entry(usize),
+}
+
+/// The list's rows for entries sorted by `sort_key`: IntelliJ's type
+/// groups and, with Group by File, a node per file inside each (only
+/// breakpoints with a source position: not a wildcard method breakpoint).
+fn rows<'a>(entries: &[&'a SavedBreakpoint], by_file: bool) -> Vec<Row<'a>> {
+    let mut rows = Vec::new();
+    let (mut last_group, mut last_file) = ("", None);
+    for (ix, b) in entries.iter().enumerate() {
+        let g = group(b);
+        if g != last_group {
+            last_group = g;
+            last_file = None;
+            rows.push(Row::Group(g));
+        }
+        let file = (by_file && b.class_pattern.is_none()).then_some(b.file.as_str());
+        if file.is_some() && file != last_file {
+            rows.push(Row::File(b.file.as_str()));
+        }
+        last_file = file;
+        rows.push(Row::Entry(ix));
+    }
+    rows
+}
+
+/// Groups in IntelliJ's order, then by file name (a file's breakpoints
+/// together) and line.
+fn sort_key(b: &SavedBreakpoint) -> (&'static str, bool, &str, &str, u32) {
+    let name = b.file.rsplit(['/', '\\']).next().unwrap_or(&b.file);
+    (group(b), b.class_pattern.is_none(), name, b.file.as_str(), b.line)
 }
 
 /// What kind a breakpoint is, for its icon.
@@ -158,8 +197,7 @@ fn exception_title(e: &SavedExceptionBreakpoint) -> String {
 impl BreakpointsView {
     fn refresh(&mut self, cx: &App) {
         let mut entries = self.service.read(cx).all_breakpoints();
-        // Groups in IntelliJ's order, then by file and line.
-        entries.sort_by(|(a, _), (b, _)| (group(a), title(a), a.line).cmp(&(group(b), title(b), b.line)));
+        entries.sort_by(|(a, _), (b, _)| sort_key(a).cmp(&sort_key(b)));
         for (b, _) in &entries {
             self.sources.entry(b.file.clone()).or_insert_with(|| std::fs::read_to_string(&b.file).map(|t| t.lines().map(|l| l.trim().to_owned()).collect()).unwrap_or_default());
         }
@@ -331,23 +369,46 @@ impl BreakpointsView {
     fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = cx.palette().clone();
         let mut list = v_flex().id("breakpoints-list").flex_1().min_h_0().overflow_y_scroll().py_1();
-        let mut last_group = "";
-        for (ix, (b, verified)) in self.entries.iter().enumerate() {
-            let g = group(b);
-            if g != last_group {
-                last_group = g;
-                list = list.child(
-                    h_flex()
-                        .h(px(24.))
-                        .px_2()
-                        .gap_1()
-                        .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
-                        .child(Icon::new(mark_icon(MarkKind::of(b), true, false, true)).xsmall())
-                        .child(g),
-                );
-            }
+        let by_file = crate::settings::Settings::get(cx).breakpoints_group_by_file;
+        let saved: Vec<&SavedBreakpoint> = self.entries.iter().map(|(b, _)| b).collect();
+        for row in rows(&saved, by_file) {
+            let ix = match row {
+                Row::Group(g) => {
+                    let first = saved.iter().find(|b| group(b) == g).expect("a group has an entry");
+                    list = list.child(
+                        h_flex()
+                            .h(px(24.))
+                            .px_2()
+                            .gap_1()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
+                            .child(Icon::new(mark_icon(MarkKind::of(first), true, false, true)).xsmall())
+                            .child(g),
+                    );
+                    continue;
+                }
+                Row::File(path) => {
+                    let (dir, name) = path.rsplit_once(['/', '\\']).unwrap_or(("", path));
+                    list = list.child(
+                        h_flex()
+                            .h(px(24.))
+                            .pl(px(26.))
+                            .pr_2()
+                            .gap_1()
+                            .text_sm()
+                            .whitespace_nowrap()
+                            .child(Icon::new(icons::CHEVRON_DOWN).xsmall())
+                            .child(crate::ui::common::file_icon(path).xsmall())
+                            .child(div().flex_none().child(name.to_owned()))
+                            .child(div().overflow_hidden().text_ellipsis().text_color(palette.text_secondary).child(dir.to_owned())),
+                    );
+                    continue;
+                }
+                Row::Entry(ix) => ix,
+            };
+            let (b, verified) = &self.entries[ix];
+            let nested = by_file && b.class_pattern.is_none();
             let selected = self.selected.as_ref().is_some_and(|(f, l)| f == &b.file && *l == b.line);
             let source = self.sources.get(&b.file).and_then(|lines| lines.get(b.line as usize)).cloned().unwrap_or_default();
             let (file, line, enabled) = (b.file.clone(), b.line, b.enabled);
@@ -356,7 +417,7 @@ impl BreakpointsView {
                 h_flex()
                     .id(("breakpoint-row", ix))
                     .h(px(24.))
-                    .pl(px(26.))
+                    .pl(px(if nested { 44. } else { 26. }))
                     .pr_2()
                     .gap_1()
                     .text_sm()
@@ -640,7 +701,18 @@ impl Render for BreakpointsView {
                                 tool_button("breakpoints-remove", icons::REMOVE, "Remove")
                                     .disabled(!has_selection)
                                     .on_click(cx.listener(|this, _, window, cx| this.remove(window, cx))),
-                            ),
+                            )
+                            .child(div().flex_1())
+                            .child({
+                                // IntelliJ's "Group by File" (XBreakpointFileGroupingRule).
+                                let on = crate::settings::Settings::get(cx).breakpoints_group_by_file;
+                                tool_button("breakpoints-group-by-file", icons::GROUP_BY_FILE, "Group by File")
+                                    .selected(on)
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        crate::settings::Settings::update(cx, |s| s.breakpoints_group_by_file = !on);
+                                        cx.notify();
+                                    }))
+                            }),
                     )
                     .child(self.render_list(cx)),
             )
@@ -686,4 +758,53 @@ pub fn open(at: Option<(String, u32)>, window: &mut Window, cx: &mut App) {
             })
         })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bp(json: &str) -> SavedBreakpoint {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn group_by_file_nests_each_files_breakpoints_inside_its_type_group() {
+        let mut all = vec![
+            bp(r#"{"file":"/p/b/Calc.java","line":9}"#),
+            bp(r#"{"file":"/p/a/Calc.java","line":3}"#),
+            bp(r#"{"file":"/p/b/Calc.java","line":2}"#),
+            bp(r#"{"file":"/p/Main.kt","line":1}"#),
+            bp(r#"{"file":"/p/b/Calc.java","line":4,"method":"add"}"#),
+            bp(r#"{"file":"com.example.*Service.save","line":0,"method":"save","class_pattern":"com.example.*Service"}"#),
+        ];
+        all.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
+        let entries: Vec<&SavedBreakpoint> = all.iter().collect();
+        let titles: Vec<String> = entries.iter().map(|b| format!("{}:{}", b.file, b.line)).collect();
+        assert_eq!(titles, ["/p/a/Calc.java:3", "/p/b/Calc.java:2", "/p/b/Calc.java:9", "com.example.*Service.save:0", "/p/b/Calc.java:4", "/p/Main.kt:1"]);
+        // Off: only the type groups.
+        assert_eq!(
+            rows(&entries, false),
+            [Row::Group("Java Line Breakpoints"), Row::Entry(0), Row::Entry(1), Row::Entry(2), Row::Group("Java Method Breakpoints"), Row::Entry(3), Row::Entry(4), Row::Group("Kotlin Line Breakpoints"), Row::Entry(5)]
+        );
+        // On: a node per file; the wildcard breakpoint has no file.
+        assert_eq!(
+            rows(&entries, true),
+            [
+                Row::Group("Java Line Breakpoints"),
+                Row::File("/p/a/Calc.java"),
+                Row::Entry(0),
+                Row::File("/p/b/Calc.java"),
+                Row::Entry(1),
+                Row::Entry(2),
+                Row::Group("Java Method Breakpoints"),
+                Row::Entry(3),
+                Row::File("/p/b/Calc.java"),
+                Row::Entry(4),
+                Row::Group("Kotlin Line Breakpoints"),
+                Row::File("/p/Main.kt"),
+                Row::Entry(5),
+            ]
+        );
+    }
 }

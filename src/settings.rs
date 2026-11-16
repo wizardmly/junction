@@ -90,6 +90,8 @@ pub struct Settings {
     pub commit_group_by_module: bool,
     pub commit_group_by_repository: bool,
     pub commit_show_ignored: bool,
+    /// Breakpoints dialog › Group by File.
+    pub breakpoints_group_by_file: bool,
     /// Languages & Frameworks: ask language servers first for navigation.
     pub use_language_servers: bool,
     /// Build, Execution, Deployment › Compiler › "Compile on save": saving
@@ -464,6 +466,7 @@ impl Default for Settings {
             commit_group_by_module: false,
             commit_group_by_repository: true,
             commit_show_ignored: false,
+            breakpoints_group_by_file: false,
         }
     }
 }
@@ -680,6 +683,7 @@ impl Settings {
                 "commit_group_by_module" => settings.commit_group_by_module = flag,
                 "commit_group_by_root" => settings.commit_group_by_repository = flag,
                 "commit_show_ignored" => settings.commit_show_ignored = flag,
+                "breakpoints_group_by_file" => settings.breakpoints_group_by_file = flag,
                 "update_clean" => settings.update_shelve = value == "shelve",
                 "sync_branches" => settings.sync_branches = flag,
                 "update_dialog" => settings.update_dialog = flag,
@@ -775,9 +779,10 @@ impl Settings {
             }
         ));
         text.push_str(&format!(
-            "commit_group_by_directory={}\ncommit_show_ignored={}\nupdate_clean={}\nsync_branches={}\nupdate_dialog={}\n",
+            "commit_group_by_directory={}\ncommit_show_ignored={}\nbreakpoints_group_by_file={}\nupdate_clean={}\nsync_branches={}\nupdate_dialog={}\n",
             self.commit_group_by_directory,
             self.commit_show_ignored,
+            self.breakpoints_group_by_file,
             if self.update_shelve { "shelve" } else { "stash" },
             self.sync_branches,
             self.update_dialog
