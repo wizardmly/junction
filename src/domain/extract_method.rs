@@ -124,15 +124,20 @@ pub struct ExtractRequest {
     /// The parameters' order in the signature, as indexes into the plan's
     /// (the dialog's Move Up / Move Down); empty for the plan's order.
     pub order: Vec<usize>,
+    /// The parameters not passed (unchecked in the dialog, as IntelliJ's
+    /// table allows): left out of the signature and the call; Java declares
+    /// them at the new method's start for the user to initialize.
+    pub skipped: Vec<usize>,
 }
 
 impl ExtractRequest {
-    /// The plan's parameter indexes in signature order.
+    /// The plan's indexes of the parameters passed, in signature order.
     pub fn ordered(&self) -> Vec<usize> {
         let n = self.parameters.len();
         let mut sorted = self.order.clone();
         sorted.sort_unstable();
-        if sorted == (0..n).collect::<Vec<_>>() { self.order.clone() } else { (0..n).collect() }
+        let order: Vec<usize> = if sorted == (0..n).collect::<Vec<_>>() { self.order.clone() } else { (0..n).collect() };
+        order.into_iter().filter(|i| !self.skipped.contains(i)).collect()
     }
 }
 
@@ -263,10 +268,19 @@ pub fn extract(style: ImportStyle, text: &str, plan: &MethodPlan, request: &Extr
         let _ = std::fmt::Write::write_fmt(&mut method, format_args!(" = {}", reindent(&code, &statement_indent, "").trim_start()));
     } else {
         method.push_str(" {\n");
+        // IntelliJ's Java declares a parameter not passed, its value left
+        // for the user (`int n = ;`, as `ExtractMethodProcessor` writes it).
+        if java {
+            for i in &request.skipped {
+                if let Some((name, ty)) = request.parameters.get(*i) {
+                    method.push_str(&format!("{inner}{ty} {name} = ;\n"));
+                }
+            }
+        }
         // Kotlin's parameters can't be assigned: a `var` copy first.
         if !java {
-            for (p, (name, _)) in plan.parameters.iter().zip(&request.parameters) {
-                if p.assigned {
+            for (i, (p, (name, _))) in plan.parameters.iter().zip(&request.parameters).enumerate() {
+                if p.assigned && !request.skipped.contains(&i) {
                     method.push_str(&format!("{inner}var {name} = {name}\n"));
                 }
             }
@@ -347,6 +361,7 @@ mod tests {
             parameters: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
             result_type: result.into(),
             order: Vec::new(),
+            skipped: Vec::new(),
         }
     }
 
@@ -488,5 +503,44 @@ mod tests {
         // Not a permutation: the plan's order.
         r.order = vec![1, 1];
         assert_eq!(r.ordered(), [0, 1]);
+    }
+
+    #[test]
+    fn leaves_out_unchecked_parameters() {
+        let text = "class A {\n    int f(int a, int b) {\n        int c = a + b;\n        return c;\n    }\n}\n";
+        let start = text.find("int c").unwrap();
+        let plan = MethodPlan {
+            range: start..start + 14,
+            expression: false,
+            parameters: vec![
+                Parameter { name: "a".into(), ty: "int".into(), uses: vec![8..9], assigned: false },
+                Parameter { name: "b".into(), ty: "int".into(), uses: vec![12..13], assigned: false },
+            ],
+            output: Some(Output::Declared { name: "c".into(), ty: "int".into(), mutable: false }),
+            returns: None,
+            expression_type: String::new(),
+            insert_at: text.find("    }\n}").unwrap() + 5,
+            member_indent: "    ".into(),
+            is_static: false,
+            taken: vec!["f".into()],
+            type_parameters: vec![],
+            type_constraints: vec![],
+            receiver: String::new(),
+            receiver_labels: Vec::new(),
+        };
+        // Java declares it for the user to initialize, as IntelliJ does.
+        let mut r = request("sum", &[("a", "int"), ("b", "int")], "");
+        r.skipped = vec![1];
+        assert_eq!(signature(ImportStyle::Java, &plan, &r), "private int sum(int a)");
+        let out = apply(text, &extract(ImportStyle::Java, text, &plan, &r, "    ", &[]).unwrap());
+        assert!(out.contains("        int c = sum(a);\n") && out.contains("    private int sum(int a) {\n        int b = ;\n        int c = a + b;\n        return c;\n    }"), "{out}");
+        // Kotlin only leaves it out of the signature and the call.
+        let kt = "class A {\n    fun f(a: Int, b: Int): Int {\n        val c = a + b;\n        return c\n    }\n}\n";
+        let start = kt.find("val c").unwrap();
+        let plan = MethodPlan { range: start..start + 14, insert_at: kt.find("    }\n}").unwrap() + 5, output: Some(Output::Declared { name: "c".into(), ty: "Int".into(), mutable: false }), ..plan };
+        let mut r = request("sum", &[("a", "Int"), ("b", "Int")], "");
+        r.skipped = vec![0];
+        let out = apply(kt, &extract(ImportStyle::Kotlin, kt, &plan, &r, "    ", &[]).unwrap());
+        assert!(out.contains("        val c = sum(b)\n") && out.contains("    private fun sum(b: Int): Int {\n        val c = a + b;\n        return c\n    }"), "{out}");
     }
 }
