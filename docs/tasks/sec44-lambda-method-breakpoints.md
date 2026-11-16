@@ -5,7 +5,7 @@ features: 第 43 节
 status: done
 owner: Claude（项目线程）/ 替 Megan 干活
 branch: task/sec44-lambda-method-breakpoints
-pr:
+pr: https://github.com/wizardmly/junction/pull/345
 claimed: 2026-11-16
 files: src/index/method_breakpoint.rs, src/domain/debugger.rs, src/usecase/debug_session.rs, src/ui/debug_service.rs
 ---
