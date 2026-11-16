@@ -889,6 +889,7 @@ mod tests {
                 parameters: plan.parameters.iter().map(|p| (p.name.clone(), p.ty.clone())).collect(),
                 result_type: String::new(),
                 order: Vec::new(),
+                skipped: Vec::new(),
             };
             let e = extract(style, text, &plan, &request, "    ", &[]).unwrap();
             (signature(style, &plan, &request), format!("{}{}{}", &text[..e.range.start], e.text, &text[e.range.end..]))
@@ -934,7 +935,7 @@ mod tests {
         let p = plan(Lang::Kotlin, text, span(text, "val a = n", "a * 2")).unwrap();
         let d = duplicates(Lang::Kotlin, text, &p, false);
         assert_eq!(d.iter().map(|d| d.args.clone()).collect::<Vec<_>>(), [vec!["k".to_owned()]]);
-        let request = ExtractRequest { name: "twice".into(), visibility: "private".into(), is_static: false, parameters: vec![("n".into(), "Int".into())], result_type: String::new(), order: Vec::new() };
+        let request = ExtractRequest { name: "twice".into(), visibility: "private".into(), is_static: false, parameters: vec![("n".into(), "Int".into())], result_type: String::new(), order: Vec::new(), skipped: Vec::new() };
         let e = extract(ImportStyle::Kotlin, text, &p, &request, "    ", &d).unwrap();
         let out = format!("{}{}{}", &text[..e.range.start], e.text, &text[e.range.end..]);
         assert!(out.contains("    fun h(k: Int) {\n        val b = twice(k)\n        println(b)"), "{out}");
@@ -952,7 +953,7 @@ mod tests {
         let p = plan(Lang::Kotlin, text, span(text, "s += 2", "s += 2")).unwrap();
         let d = duplicates(Lang::Kotlin, text, &p, false);
         assert_eq!(d.iter().map(|d| d.assigned.clone()).collect::<Vec<_>>(), [Some("t".to_owned())]);
-        let request = ExtractRequest { name: "add".into(), visibility: "private".into(), is_static: false, parameters: vec![("s".into(), "Int".into())], result_type: String::new(), order: Vec::new() };
+        let request = ExtractRequest { name: "add".into(), visibility: "private".into(), is_static: false, parameters: vec![("s".into(), "Int".into())], result_type: String::new(), order: Vec::new(), skipped: Vec::new() };
         let e = extract(ImportStyle::Kotlin, text, &p, &request, "    ", &d).unwrap();
         let out = format!("{}{}{}", &text[..e.range.start], e.text, &text[e.range.end..]);
         assert!(out.starts_with("fun f() {\n    var s = 0\n    s = add(s)\n    println(s)\n    var t = 1\n    t = add(t)\n    println(t)\n}\n\nprivate fun add(s: Int): Int {"), "{out}");

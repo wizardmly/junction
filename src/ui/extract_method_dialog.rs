@@ -1,7 +1,8 @@
 //! IntelliJ's Extract Method (Java) / Extract Function (Kotlin) dialog:
 //! the name, the visibility, "Declare static" in Java, the return type
 //! when the code doesn't show it, the parameters (renamable, their types
-//! editable, reordered with Move Up / Move Down) and the signature's preview.
+//! editable, reordered with Move Up / Move Down, unchecked to not pass
+//! them) and the signature's preview.
 
 use std::rc::Rc;
 
@@ -34,6 +35,8 @@ pub struct ExtractMethodView {
     /// The signature's order (indexes into `parameters`) and the selected row.
     order: Vec<usize>,
     selected: Option<usize>,
+    /// Each parameter's checkbox (IntelliJ's): passed, in the plan's order.
+    passed: Vec<bool>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -47,6 +50,7 @@ impl ExtractMethodView {
             parameters: self.parameters.iter().map(|(n, t)| (value(n), value(t))).collect(),
             result_type: self.result_type.as_ref().map(value).unwrap_or_default(),
             order: self.order.clone(),
+            skipped: self.passed.iter().enumerate().filter(|(_, p)| !**p).map(|(i, _)| i).collect(),
         }
     }
 
@@ -103,6 +107,7 @@ impl Render for ExtractMethodView {
         let mut params = v_flex().gap_1();
         for (row, i) in self.order.iter().enumerate() {
             let (name, ty) = &self.parameters[*i];
+            let i = *i;
             params = params.child(
                 h_flex()
                     .id(("extract-param", row))
@@ -114,6 +119,10 @@ impl Render for ExtractMethodView {
                         this.selected = Some(row);
                         cx.notify();
                     }))
+                    .child(Checkbox::new(("extract-pass", row)).checked(self.passed[i]).on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                        this.passed[i] = *checked;
+                        cx.notify();
+                    })))
                     .child(div().w(px(180.)).child(Input::new(name).small()))
                     .child(div().flex_1().child(Input::new(ty).small())),
             );
@@ -142,7 +151,7 @@ impl Render for ExtractMethodView {
                         .child(tool_button("extract-up", icons::MOVE_UP, "Move Up").disabled(!has).on_click(cx.listener(|this, _, _, cx| this.shift(true, cx))))
                         .child(tool_button("extract-down", icons::MOVE_DOWN, "Move Down").disabled(!has).on_click(cx.listener(|this, _, _, cx| this.shift(false, cx)))),
                 )
-                    .child(h_flex().gap_2().text_xs().text_color(palette.text_secondary).child(div().w(px(180.)).child("Name")).child(div().child("Type")))
+                    .child(h_flex().gap_2().text_xs().text_color(palette.text_secondary).child(div().w(px(16.))).child(div().w(px(180.)).child("Name")).child(div().child("Type")))
                     .child(params)
             })
             .child(div().text_sm().text_color(palette.text_secondary).child("Signature Preview:"))
@@ -183,7 +192,8 @@ pub fn open(style: ImportStyle, plan: MethodPlan, on_ok: impl Fn(ExtractRequest,
         }
         let order = (0..parameters.len()).collect();
         let selected = (!parameters.is_empty()).then_some(0);
-        ExtractMethodView { style, is_static: plan.is_static, plan, name, visibility: "private".into(), result_type, parameters, order, selected, _subscriptions }
+        let passed = vec![true; parameters.len()];
+        ExtractMethodView { style, is_static: plan.is_static, plan, name, visibility: "private".into(), result_type, parameters, order, selected, passed, _subscriptions }
     });
     let focus = view.read(cx).name.clone();
     let on_ok = Rc::new(on_ok);

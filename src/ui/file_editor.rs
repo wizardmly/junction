@@ -1559,7 +1559,8 @@ impl FileEditor {
             };
             // IntelliJ's duplicates: the same code elsewhere in the file can
             // become the call too.
-            let duplicates = crate::index::extract_method::duplicates(lang, &text, &plan, request.is_static);
+            // With a parameter not passed, a duplicate's value for it would be lost.
+            let duplicates = if request.skipped.is_empty() { crate::index::extract_method::duplicates(lang, &text, &plan, request.is_static) } else { Vec::new() };
             if duplicates.is_empty() {
                 return apply(&[], window, cx);
             }
